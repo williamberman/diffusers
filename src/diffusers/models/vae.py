@@ -62,6 +62,7 @@ class Encoder(nn.Module):
         norm_num_groups=32,
         act_fn="silu",
         double_z=True,
+        conv_attention_block: bool = False
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
@@ -90,6 +91,7 @@ class Encoder(nn.Module):
                 resnet_groups=norm_num_groups,
                 attn_num_head_channels=None,
                 temb_channels=None,
+                conv_attention_block=conv_attention_block
             )
             self.down_blocks.append(down_block)
 
@@ -103,6 +105,7 @@ class Encoder(nn.Module):
             attn_num_head_channels=None,
             resnet_groups=norm_num_groups,
             temb_channels=None,
+            conv_attention_block=conv_attention_block
         )
 
         # out
@@ -141,6 +144,7 @@ class Decoder(nn.Module):
         layers_per_block=2,
         norm_num_groups=32,
         act_fn="silu",
+        conv_attention_block: bool = False
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
@@ -160,6 +164,7 @@ class Decoder(nn.Module):
             attn_num_head_channels=None,
             resnet_groups=norm_num_groups,
             temb_channels=None,
+            conv_attention_block=conv_attention_block
         )
 
         # up
@@ -183,6 +188,7 @@ class Decoder(nn.Module):
                 resnet_groups=norm_num_groups,
                 attn_num_head_channels=None,
                 temb_channels=None,
+                conv_attention_block=conv_attention_block
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -408,6 +414,8 @@ class VQModel(ModelMixin, ConfigMixin):
         sample_size: int = 32,
         num_vq_embeddings: int = 256,
         norm_num_groups: int = 32,
+        e_dim: Optional[int] = None,
+        conv_attention_block: bool = False
     ):
         super().__init__()
 
@@ -421,13 +429,16 @@ class VQModel(ModelMixin, ConfigMixin):
             act_fn=act_fn,
             norm_num_groups=norm_num_groups,
             double_z=False,
+            conv_attention_block=conv_attention_block,
         )
 
-        self.quant_conv = torch.nn.Conv2d(latent_channels, latent_channels, 1)
+        e_dim = e_dim if e_dim is not None else latent_channels
+
+        self.quant_conv = torch.nn.Conv2d(latent_channels, e_dim, 1)
         self.quantize = VectorQuantizer(
-            num_vq_embeddings, latent_channels, beta=0.25, remap=None, sane_index_shape=False
+            num_vq_embeddings, e_dim, beta=0.25, remap=None, sane_index_shape=False
         )
-        self.post_quant_conv = torch.nn.Conv2d(latent_channels, latent_channels, 1)
+        self.post_quant_conv = torch.nn.Conv2d(e_dim, latent_channels, 1)
 
         # pass init params to Decoder
         self.decoder = Decoder(
@@ -438,6 +449,7 @@ class VQModel(ModelMixin, ConfigMixin):
             layers_per_block=layers_per_block,
             act_fn=act_fn,
             norm_num_groups=norm_num_groups,
+            conv_attention_block=conv_attention_block
         )
 
     def encode(self, x: torch.FloatTensor, return_dict: bool = True) -> VQEncoderOutput:

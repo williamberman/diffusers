@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .attention import AttentionBlock, SpatialTransformer
+from .attention import AttentionBlock, SpatialTransformer, ConvAttentionBlock
 from .resnet import Downsample2D, FirDownsample2D, FirUpsample2D, ResnetBlock2D, Upsample2D
 
 
@@ -34,6 +34,7 @@ def get_down_block(
     resnet_groups=None,
     cross_attention_dim=None,
     downsample_padding=None,
+    conv_attention_block=False
 ):
     down_block_type = down_block_type[7:] if down_block_type.startswith("UNetRes") else down_block_type
     if down_block_type == "DownBlock2D":
@@ -111,6 +112,20 @@ def get_down_block(
             resnet_groups=resnet_groups,
             downsample_padding=downsample_padding,
         )
+    elif down_block_type == "AttnDownEncoderBlock2D":
+        return AttnDownEncoderBlock2D(
+            num_layers=num_layers,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            add_downsample=add_downsample,
+            resnet_eps=resnet_eps,
+            resnet_act_fn=resnet_act_fn,
+            resnet_groups=resnet_groups,
+            downsample_padding=downsample_padding,
+            attn_num_head_channels=attn_num_head_channels,
+            conv_attention_block=conv_attention_block
+        )
+    raise ValueError(f"{down_block_type} does not exist.")
 
 
 def get_up_block(
@@ -126,6 +141,7 @@ def get_up_block(
     attn_num_head_channels,
     resnet_groups=None,
     cross_attention_dim=None,
+    conv_attention_block=False
 ):
     up_block_type = up_block_type[7:] if up_block_type.startswith("UNetRes") else up_block_type
     if up_block_type == "UpBlock2D":
@@ -202,6 +218,18 @@ def get_up_block(
             resnet_act_fn=resnet_act_fn,
             resnet_groups=resnet_groups,
         )
+    elif up_block_type == "AttnUpDecoderBlock2D":
+        return AttnUpDecoderBlock2D(
+            num_layers=num_layers,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            add_upsample=add_upsample,
+            resnet_eps=resnet_eps,
+            resnet_act_fn=resnet_act_fn,
+            resnet_groups=resnet_groups,
+            attn_num_head_channels=attn_num_head_channels,
+            conv_attention_block=conv_attention_block
+        )
     raise ValueError(f"{up_block_type} does not exist.")
 
 
@@ -220,6 +248,7 @@ class UNetMidBlock2D(nn.Module):
         attn_num_head_channels=1,
         attention_type="default",
         output_scale_factor=1.0,
+        conv_attention_block: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -244,9 +273,11 @@ class UNetMidBlock2D(nn.Module):
         ]
         attentions = []
 
+        attention_block_class = ConvAttentionBlock if conv_attention_block else AttentionBlock
+
         for _ in range(num_layers):
             attentions.append(
-                AttentionBlock(
+                attention_block_class(
                     in_channels,
                     num_head_channels=attn_num_head_channels,
                     rescale_output_factor=output_scale_factor,
@@ -730,10 +761,13 @@ class AttnDownEncoderBlock2D(nn.Module):
         output_scale_factor=1.0,
         add_downsample=True,
         downsample_padding=1,
+        conv_attention_block: bool=False
     ):
         super().__init__()
         resnets = []
         attentions = []
+
+        attention_block_class = ConvAttentionBlock if conv_attention_block else AttentionBlock
 
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
@@ -752,7 +786,7 @@ class AttnDownEncoderBlock2D(nn.Module):
                 )
             )
             attentions.append(
-                AttentionBlock(
+                attention_block_class(
                     out_channels,
                     num_head_channels=attn_num_head_channels,
                     rescale_output_factor=output_scale_factor,
@@ -1299,10 +1333,13 @@ class AttnUpDecoderBlock2D(nn.Module):
         attn_num_head_channels=1,
         output_scale_factor=1.0,
         add_upsample=True,
+        conv_attention_block: bool = False
     ):
         super().__init__()
         resnets = []
         attentions = []
+
+        attention_block_class = ConvAttentionBlock if conv_attention_block else AttentionBlock
 
         for i in range(num_layers):
             input_channels = in_channels if i == 0 else out_channels
@@ -1322,7 +1359,7 @@ class AttnUpDecoderBlock2D(nn.Module):
                 )
             )
             attentions.append(
-                AttentionBlock(
+                attention_block_class(
                     out_channels,
                     num_head_channels=attn_num_head_channels,
                     rescale_output_factor=output_scale_factor,

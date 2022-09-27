@@ -91,6 +91,64 @@ class AttentionBlock(nn.Module):
         hidden_states = (hidden_states + residual) / self.rescale_output_factor
         return hidden_states
 
+class ConvAttentionBlock(nn.Module):
+    def __init__(
+        self, 
+        channels: int,
+        num_head_channels: Optional[int] = None,
+        num_groups: int = 32,
+        rescale_output_factor: float = 1.0,
+        eps: float = 1e-5,
+    ):
+        super().__init__()
+
+        self.channels = channels
+
+        self.num_heads = channels // num_head_channels if num_head_channels is not None else 1
+        self.num_head_size = num_head_channels
+        self.group_norm = nn.GroupNorm(num_channels=channels, num_groups=num_groups, eps=eps, affine=True)
+
+        self.query = nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0)
+        self.key = nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0)
+        self.value = nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0)
+
+        self.proj_attn = nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0)
+
+        self.rescale_output_factor = rescale_output_factor
+
+    def forward(self, hidden_states):
+        residual = hidden_states
+
+        hidden_states = self.group_norm(hidden_states)
+
+        query_proj = self.query(hidden_states)
+        key_proj = self.key(hidden_states)
+        value_proj = self.value(hidden_states)
+
+        batch, channel, height, width = query_proj.shape
+
+        query_states = query_proj.reshape(batch, channel, height * width).permute(0, 2, 1)
+        key_states = key_proj.reshape(batch, channel, height * width)
+        value_states = value_proj.reshape(batch, channel, height * width)
+
+        scale = 1 / math.sqrt(self.channels / self.num_heads)
+        attention_scores = torch.bmm(query_states, key_states)
+        attention_scores = attention_scores * scale
+
+        attention_probs = torch.softmax(attention_scores.float(), dim=2).type(attention_scores.dtype)
+        attention_probs = attention_probs.permute(0, 2, 1)
+
+        hidden_states = torch.bmm(value_states, attention_probs)
+        hidden_states = hidden_states.reshape(batch, channel, height, width)
+        hidden_states = self.proj_attn(hidden_states)
+
+        # res connect and resale
+        hidden_states = (hidden_states + residual) / self.rescale_output_factor
+
+        return hidden_states
+
+
+
 
 class SpatialTransformer(nn.Module):
     """
