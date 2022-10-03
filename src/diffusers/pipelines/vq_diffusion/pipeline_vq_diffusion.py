@@ -1,5 +1,5 @@
 from ...pipeline_utils import DiffusionPipeline
-from diffusers import VQModel
+from diffusers import VQModel, VQDiffusionTransformer
 
 import numpy as np
 import torch
@@ -24,10 +24,11 @@ def preprocess_image(image):
 class VQDiffusionPipeline(DiffusionPipeline):
 
     vqvae: VQModel
+    transformer: VQDiffusionTransformer
 
-    def __init__(self, vqvae: VQModel):
+    def __init__(self, vqvae: VQModel, transformer: VQDiffusionTransformer):
         super().__init__()
-        self.register_modules(vqvae=vqvae)
+        self.register_modules(vqvae=vqvae, transformer=transformer)
 
     @torch.no_grad()
     def encode(self, image):

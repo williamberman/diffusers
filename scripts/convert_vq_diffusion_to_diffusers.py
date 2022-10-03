@@ -30,8 +30,10 @@ import torch
 import yaml
 from yaml.loader import FullLoader
 from diffusers import VQModel
+from diffusers.models.vq_diffusion_attention import VQDiffusionTransformer
 from diffusers.pipelines import VQDiffusionPipeline
-import sys
+from accelerate import init_empty_weights, load_checkpoint_and_dispatch
+import tempfile
 
 try:
     from omegaconf import OmegaConf
@@ -160,7 +162,7 @@ def vqvae_original_checkpoint_to_diffusers_checkpoint(model, checkpoint):
     diffusers_checkpoint = {}
 
     diffusers_checkpoint.update(
-        encoder_to_diffusers_checkpoint(model, checkpoint)
+        vqvae_encoder_to_diffusers_checkpoint(model, checkpoint)
     )
 
     # quant_conv
@@ -183,12 +185,12 @@ def vqvae_original_checkpoint_to_diffusers_checkpoint(model, checkpoint):
 
     # decoder
     diffusers_checkpoint.update(
-        decoder_to_diffusers_checkpoint(model, checkpoint)
+        vqvae_decoder_to_diffusers_checkpoint(model, checkpoint)
     )
 
     return diffusers_checkpoint
 
-def encoder_to_diffusers_checkpoint(model, checkpoint):
+def vqvae_encoder_to_diffusers_checkpoint(model, checkpoint):
     diffusers_checkpoint = {}
 
     # conv_in
@@ -208,7 +210,7 @@ def encoder_to_diffusers_checkpoint(model, checkpoint):
             resnet_prefix = f"{down_block_prefix}.block.{resnet_idx}"
 
             diffusers_checkpoint.update(
-                resnet_to_diffusers_checkpoint(
+                vqvae_resnet_to_diffusers_checkpoint(
                     resnet,
                     checkpoint, 
                     diffusers_resnet_prefix=diffusers_resnet_prefix,
@@ -237,7 +239,7 @@ def encoder_to_diffusers_checkpoint(model, checkpoint):
                 diffusers_attention_prefix = f"{diffusers_down_block_prefix}.attentions.{attention_idx}"
                 attention_prefix = f"{down_block_prefix}.attn.{attention_idx}"
                 diffusers_checkpoint.update(
-                    attention_to_diffusers_checkpoint(
+                    vqvae_attention_to_diffusers_checkpoint(
                         checkpoint,
                         diffusers_attention_prefix=diffusers_attention_prefix,
                         attention_prefix=attention_prefix
@@ -253,7 +255,7 @@ def encoder_to_diffusers_checkpoint(model, checkpoint):
     diffusers_attention_prefix = f"encoder.mid_block.attentions.0"
     attention_prefix = f"encoder.mid.attn_1"
     diffusers_checkpoint.update(
-        attention_to_diffusers_checkpoint(
+        vqvae_attention_to_diffusers_checkpoint(
             checkpoint, 
             diffusers_attention_prefix=diffusers_attention_prefix,
             attention_prefix=attention_prefix
@@ -271,7 +273,7 @@ def encoder_to_diffusers_checkpoint(model, checkpoint):
         resnet_prefix = f"encoder.mid.block_{orig_resnet_idx}"
 
         diffusers_checkpoint.update(
-            resnet_to_diffusers_checkpoint(
+            vqvae_resnet_to_diffusers_checkpoint(
                 resnet,
                 checkpoint,
                 diffusers_resnet_prefix=diffusers_resnet_prefix,
@@ -292,7 +294,7 @@ def encoder_to_diffusers_checkpoint(model, checkpoint):
 
     return diffusers_checkpoint
 
-def decoder_to_diffusers_checkpoint(model, checkpoint):
+def vqvae_decoder_to_diffusers_checkpoint(model, checkpoint):
     diffusers_checkpoint = {}
 
     # conv in
@@ -316,7 +318,7 @@ def decoder_to_diffusers_checkpoint(model, checkpoint):
             resnet_prefix = f"{up_block_prefix}.block.{resnet_idx}"
 
             diffusers_checkpoint.update(
-                resnet_to_diffusers_checkpoint(
+                vqvae_resnet_to_diffusers_checkpoint(
                     resnet,
                     checkpoint, 
                     diffusers_resnet_prefix=diffusers_resnet_prefix,
@@ -344,7 +346,7 @@ def decoder_to_diffusers_checkpoint(model, checkpoint):
                 diffusers_attention_prefix = f"{diffusers_up_block_prefix}.attentions.{attention_idx}"
                 attention_prefix = f"{up_block_prefix}.attn.{attention_idx}"
                 diffusers_checkpoint.update(
-                    attention_to_diffusers_checkpoint(
+                    vqvae_attention_to_diffusers_checkpoint(
                         checkpoint,
                         diffusers_attention_prefix=diffusers_attention_prefix,
                         attention_prefix=attention_prefix
@@ -359,7 +361,7 @@ def decoder_to_diffusers_checkpoint(model, checkpoint):
     diffusers_attention_prefix = f"decoder.mid_block.attentions.0"
     attention_prefix = f"decoder.mid.attn_1"
     diffusers_checkpoint.update(
-        attention_to_diffusers_checkpoint(
+        vqvae_attention_to_diffusers_checkpoint(
             checkpoint, 
             diffusers_attention_prefix=diffusers_attention_prefix,
             attention_prefix=attention_prefix
@@ -377,7 +379,7 @@ def decoder_to_diffusers_checkpoint(model, checkpoint):
         resnet_prefix = f"decoder.mid.block_{orig_resnet_idx}"
 
         diffusers_checkpoint.update(
-            resnet_to_diffusers_checkpoint(
+            vqvae_resnet_to_diffusers_checkpoint(
                 resnet,
                 checkpoint,
                 diffusers_resnet_prefix=diffusers_resnet_prefix,
@@ -397,7 +399,7 @@ def decoder_to_diffusers_checkpoint(model, checkpoint):
 
     return diffusers_checkpoint
 
-def resnet_to_diffusers_checkpoint(resnet, checkpoint, *, diffusers_resnet_prefix, resnet_prefix):
+def vqvae_resnet_to_diffusers_checkpoint(resnet, checkpoint, *, diffusers_resnet_prefix, resnet_prefix):
     rv = {
         # norm1
         f"{diffusers_resnet_prefix}.norm1.weight": checkpoint[f"{resnet_prefix}.norm1.weight"],
@@ -424,7 +426,7 @@ def resnet_to_diffusers_checkpoint(resnet, checkpoint, *, diffusers_resnet_prefi
 
     return rv
 
-def attention_to_diffusers_checkpoint(checkpoint, *, diffusers_attention_prefix, attention_prefix):
+def vqvae_attention_to_diffusers_checkpoint(checkpoint, *, diffusers_attention_prefix, attention_prefix):
     return {
         # group_norm
         f"{diffusers_attention_prefix}.group_norm.weight": checkpoint[f"{attention_prefix}.norm.weight"],
@@ -449,20 +451,244 @@ def attention_to_diffusers_checkpoint(checkpoint, *, diffusers_attention_prefix,
 
 ###############################################
 
+############ transformer model ################
+
+PORTED_DIFFUSIONS = ['image_synthesis.modeling.transformers.diffusion_transformer.DiffusionTransformer']
+PORTED_TRANSFORMERS = ['image_synthesis.modeling.transformers.transformer_utils.Text2ImageTransformer']
+PORTED_CONTENT_EMBEDDINGS = ['image_synthesis.modeling.embeddings.dalle_mask_image_embedding.DalleMaskImageEmbedding']
+
+def transformer_model_from_original_config(
+    original_diffusion_config, 
+    original_transformer_config, 
+    original_content_embedding_config
+):
+    assert original_diffusion_config.target in PORTED_DIFFUSIONS, f"{original_diffusion_config.target} has not yet been ported to diffusers."
+    assert original_transformer_config.target in PORTED_TRANSFORMERS, f"{original_transformer_config.target} has not yet been ported to diffusers."
+    assert original_content_embedding_config.target in PORTED_CONTENT_EMBEDDINGS, f"{original_content_embedding_config.target} has not yet been ported to diffusers."
+
+    original_diffusion_config = original_diffusion_config.params
+    original_transformer_config = original_transformer_config.params
+    original_content_embedding_config = original_content_embedding_config.params
+
+    inner_dim = original_transformer_config['n_embd']
+
+    n_heads = original_transformer_config['n_head']
+
+    # VQ-Diffusion gives dimension of the multi-headed attention layers as the 
+    # number of attention heads times the sequence length (the dimension) of a
+    # single head. We want to specify our attention blocks with those values 
+    # specified separately
+    assert(inner_dim % n_heads == 0)
+    d_head = inner_dim // n_heads
+
+    depth = original_transformer_config['n_layer']
+    context_dim = original_transformer_config['condition_dim']
+    num_embed = original_content_embedding_config['num_embed']
+    height = original_transformer_config['content_spatial_size'][0]
+    width = original_transformer_config['content_spatial_size'][1]
+    dropout = original_transformer_config['resid_pdrop']
+    diffusion_steps = original_diffusion_config['diffusion_step']
+
+    model = VQDiffusionTransformer(
+        n_heads=n_heads,
+        d_head=d_head,
+        depth=depth,
+        context_dim=context_dim,
+        num_embed=num_embed,
+        height=height,
+        width=width,
+        dropout=dropout,
+        diffusion_steps=diffusion_steps
+    )
+
+    return model
+
+###############################################
+
+########### transformer checkpoint ############
+
+def transformer_original_checkpoint_to_diffusers_checkpoint(model, checkpoint):
+    diffusers_checkpoint = {}
+
+    transformer_prefix = "transformer.transformer"
+
+    diffusers_latent_image_embedding_prefix = "latent_image_embedding"
+    latent_image_embedding_prefix = f"{transformer_prefix}.content_emb"
+    
+    # DalleMaskImageEmbedding
+    diffusers_checkpoint.update({
+        f"{diffusers_latent_image_embedding_prefix}.emb.weight": checkpoint[f"{latent_image_embedding_prefix}.emb.weight"],
+        f"{diffusers_latent_image_embedding_prefix}.height_emb.weight": checkpoint[f"{latent_image_embedding_prefix}.height_emb.weight"],
+        f"{diffusers_latent_image_embedding_prefix}.width_emb.weight": checkpoint[f"{latent_image_embedding_prefix}.width_emb.weight"],
+    })
+    
+    # transformer blocks
+    for transformer_block_idx, transformer_block in enumerate(model.transformer_blocks):
+        diffusers_transformer_block_prefix = f"transformer_blocks.{transformer_block_idx}"
+        transformer_block_prefix = f"{transformer_prefix}.blocks.{transformer_block_idx}"
+
+        # ada norm block
+        diffusers_ada_norm_prefix = f"{diffusers_transformer_block_prefix}.norm1"
+        ada_norm_prefix = f"{transformer_block_prefix}.ln1"
+
+        diffusers_checkpoint.update(
+            transformer_ada_norm_to_diffusers_checkpoint(
+                checkpoint,
+                diffusers_ada_norm_prefix=diffusers_ada_norm_prefix, 
+                ada_norm_prefix=ada_norm_prefix
+            )
+        )
+        
+        # attention block
+        diffusers_attention_prefix = f"{diffusers_transformer_block_prefix}.attn1"
+        attention_prefix = f"{transformer_block_prefix}.attn1"
+
+        diffusers_checkpoint.update(
+            transformer_attention_to_diffusers_checkpoint(
+                checkpoint,
+                diffusers_attention_prefix=diffusers_attention_prefix,
+                attention_prefix=attention_prefix
+            )
+        )
+
+        # ada norm block
+        diffusers_ada_norm_prefix = f"{diffusers_transformer_block_prefix}.norm2"
+        ada_norm_prefix = f"{transformer_block_prefix}.ln1_1"
+
+        diffusers_checkpoint.update(
+            transformer_ada_norm_to_diffusers_checkpoint(
+                checkpoint,
+                diffusers_ada_norm_prefix=diffusers_ada_norm_prefix, 
+                ada_norm_prefix=ada_norm_prefix
+            )
+        )
+
+        # attention block
+        diffusers_attention_prefix = f"{diffusers_transformer_block_prefix}.attn2"
+        attention_prefix = f"{transformer_block_prefix}.attn2"
+
+        diffusers_checkpoint.update(
+            transformer_attention_to_diffusers_checkpoint(
+                checkpoint,
+                diffusers_attention_prefix=diffusers_attention_prefix,
+                attention_prefix=attention_prefix
+            )
+        )
+
+        # norm block
+        diffusers_norm_block_prefix = f"{diffusers_transformer_block_prefix}.norm3"
+        norm_block_prefix = f"{transformer_block_prefix}.ln2"
+
+        diffusers_checkpoint.update({
+            f"{diffusers_norm_block_prefix}.weight": checkpoint[f"{norm_block_prefix}.weight"],
+            f"{diffusers_norm_block_prefix}.bias": checkpoint[f"{norm_block_prefix}.bias"]
+        })
+
+        # feedforward block
+        diffusers_feedforward_prefix = f"{diffusers_transformer_block_prefix}.ff"
+        feedforward_prefix = f"{transformer_block_prefix}.mlp"
+
+        diffusers_checkpoint.update(
+            transformer_feedforward_to_diffusers_checkpoint(
+                checkpoint,
+                diffusers_feedforward_prefix=diffusers_feedforward_prefix,
+                feedforward_prefix=feedforward_prefix
+            )
+        )
+
+    # to logits
+
+    diffusers_norm_out_prefix = "norm_out"
+    norm_out_prefix = f"{transformer_prefix}.to_logits.0"
+
+    diffusers_checkpoint.update({
+        f"{diffusers_norm_out_prefix}.weight": checkpoint[f"{norm_out_prefix}.weight"],
+        f"{diffusers_norm_out_prefix}.bias": checkpoint[f"{norm_out_prefix}.bias"],
+    })
+
+    diffusers_out_prefix = "out"
+    out_prefix = f"{transformer_prefix}.to_logits.1"
+
+    diffusers_checkpoint.update({
+        f"{diffusers_out_prefix}.weight": checkpoint[f"{out_prefix}.weight"],
+        f"{diffusers_out_prefix}.bias": checkpoint[f"{out_prefix}.bias"],
+    })
+
+    return diffusers_checkpoint
+
+def transformer_ada_norm_to_diffusers_checkpoint(checkpoint, *, diffusers_ada_norm_prefix, ada_norm_prefix):
+    return {
+        f"{diffusers_ada_norm_prefix}.emb.weight": checkpoint[f"{ada_norm_prefix}.emb.weight"],
+        f"{diffusers_ada_norm_prefix}.linear.weight": checkpoint[f"{ada_norm_prefix}.linear.weight"],
+        f"{diffusers_ada_norm_prefix}.linear.bias": checkpoint[f"{ada_norm_prefix}.linear.bias"],
+    }
+
+def transformer_attention_to_diffusers_checkpoint(checkpoint, *, diffusers_attention_prefix, attention_prefix):
+    return {
+        # key
+        f"{diffusers_attention_prefix}.to_k.weight": checkpoint[f"{attention_prefix}.key.weight"],
+        f"{diffusers_attention_prefix}.to_k.bias": checkpoint[f"{attention_prefix}.key.bias"],
+
+        # query
+        f"{diffusers_attention_prefix}.to_q.weight": checkpoint[f"{attention_prefix}.query.weight"],
+        f"{diffusers_attention_prefix}.to_q.bias": checkpoint[f"{attention_prefix}.query.bias"],
+
+        # value
+        f"{diffusers_attention_prefix}.to_v.weight": checkpoint[f"{attention_prefix}.value.weight"],
+        f"{diffusers_attention_prefix}.to_v.bias": checkpoint[f"{attention_prefix}.value.bias"],
+
+        # linear out
+        f"{diffusers_attention_prefix}.to_out.0.weight": checkpoint[f"{attention_prefix}.proj.weight"],
+        f"{diffusers_attention_prefix}.to_out.0.bias": checkpoint[f"{attention_prefix}.proj.bias"],
+    }
+
+def transformer_feedforward_to_diffusers_checkpoint(checkpoint, *, diffusers_feedforward_prefix, feedforward_prefix):
+    return {
+        f"{diffusers_feedforward_prefix}.net.0.weight": checkpoint[f"{feedforward_prefix}.0.weight"],
+        f"{diffusers_feedforward_prefix}.net.0.bias": checkpoint[f"{feedforward_prefix}.0.bias"],
+
+        f"{diffusers_feedforward_prefix}.net.2.weight": checkpoint[f"{feedforward_prefix}.2.weight"],
+        f"{diffusers_feedforward_prefix}.net.2.bias": checkpoint[f"{feedforward_prefix}.2.bias"],
+    }
+
+###############################################
+
+def read_config_file(filename):
+    # The yaml file contains annotations that certain values should
+    # loaded as tuples. By default, OmegaConf will panic when reading
+    # these. Instead, we can manually read the yaml with the FullLoader and then
+    # construct the OmegaConf object.
+    with open(filename) as f:
+        original_config = yaml.load(f, FullLoader)
+
+    return OmegaConf.create(original_config)
+
+# We take separate arguments for the vqvae because the ITHQ vqvae config file
+# is separate from the config file for the rest of the model.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--only-vqvae",
-        action="store_true",
-        help="Set flag to only convert the VQVAE model. checkpoint_path and original_config_file must point to checkpoints and configs only for the VQVAE, not the whole diffusion model. Note that the entirety of the diffusers VQDiffusionPipeline will be saved."
+        "--vqvae_checkpoint_path", 
+        default=None, 
+        type=str, 
+        required=True,
+        help="Path to the vqvae checkpoint to convert."
+    )
+
+    parser.add_argument(
+        "--vqvae_original_config_file",
+        default=None,
+        type=str,
+        required=True,
+        help="The YAML config file corresponding to the original architecture for the vqvae.",
     )
 
     parser.add_argument(
         "--checkpoint_path", 
         default=None, 
         type=str, 
-        required=True, 
+        required=True,
         help="Path to the checkpoint to convert."
     )
 
@@ -482,27 +708,104 @@ if __name__ == "__main__":
         help="Path to the output model."
     )
 
+    parser.add_argument(
+        '--checkpoint_load_device',
+        default='cpu',
+        type=str,
+        required=False,
+        help="The device passed to `map_location` when loading checkpoints."
+    )
+    
+    # See link for how ema weights are always selected
+    # https://github.com/microsoft/VQ-Diffusion/blob/3c98e77f721db7c787b76304fa2c96a36c7b00af/inference_VQ_Diffusion.py#L65
+    parser.add_argument(
+        '--no_use_ema',
+        action='store_true',
+        required=False,
+        help='Set to not use the ema weights from the original VQ-Diffusion checkpoint. You probably do not want to set it as the original VQ-Diffusion always uses the ema weights when loading models.'
+    )
+
     args = parser.parse_args()
 
-    # The yaml file contains annotations that certain values should
-    # loaded as tuples. By default, OmegaConf will panic when reading
-    # these. Instead, we can manually read the yaml with the FullLoader and then
-    # construct the OmegaConf object.
-    with open(args.original_config_file) as f:
-        original_config = yaml.load(f, FullLoader)
+    use_ema = not args.no_use_ema
 
-    original_config = OmegaConf.create(original_config).model
+    print(f"loading checkpoints to {args.checkpoint_load_device}")
 
-    checkpoint = torch.load(args.checkpoint_path)['model']
+    checkpoint_map_location = torch.device(args.checkpoint_load_device)
 
-    if args.only_vqvae:
-        vqvae_model = vqvae_model_from_original_config(original_config)
-        vqvae_diffusers_checkpoint = vqvae_original_checkpoint_to_diffusers_checkpoint(vqvae_model, checkpoint)
-        vqvae_model.load_state_dict(vqvae_diffusers_checkpoint)
+    ################ vqvae_model ######################
+
+    print(f"loading vqvae, config: {args.vqvae_original_config_file}, checkpoint: {args.vqvae_checkpoint_path}")
+
+    vqvae_original_config = read_config_file(args.vqvae_original_config_file).model
+    vqvae_checkpoint = torch.load(args.vqvae_checkpoint_path, map_location=checkpoint_map_location)['model']
+
+    with init_empty_weights():
+        vqvae_model = vqvae_model_from_original_config(vqvae_original_config)
+
+    vqvae_diffusers_checkpoint = vqvae_original_checkpoint_to_diffusers_checkpoint(vqvae_model, vqvae_checkpoint)
+
+    with tempfile.NamedTemporaryFile() as vqvae_diffusers_checkpoint_file:
+        torch.save(vqvae_diffusers_checkpoint, vqvae_diffusers_checkpoint_file.name)
+        del vqvae_diffusers_checkpoint
+        del vqvae_checkpoint
+        load_checkpoint_and_dispatch(vqvae_model, vqvae_diffusers_checkpoint_file.name, device_map="auto")
+
+    print("done loading vqvae")
+
+    ###################################################
+
+    ################# transformer_model ###############
+
+    print(f"loading transformer, config: {args.original_config_file}, checkpoint: {args.checkpoint_path}, use ema: {use_ema}")
+
+    original_config = read_config_file(args.original_config_file).model
+
+    diffusion_config = original_config.params.diffusion_config
+    transformer_config = original_config.params.diffusion_config.params.transformer_config
+    content_embedding_config = original_config.params.diffusion_config.params.content_emb_config
+
+    pre_checkpoint = torch.load(args.checkpoint_path, map_location=checkpoint_map_location)
+
+    if use_ema:
+        if 'ema' in pre_checkpoint:
+            checkpoint = {}
+            for k, v in pre_checkpoint['model'].items():
+                checkpoint[k] = v
+
+            for k, v in pre_checkpoint['ema'].items():
+                # The ema weights are only used on the transformer. To mimic their key as if they came
+                # from the state_dict for the top level model, we prefix with an additional "transformer."
+                # See the source linked in the args.use_ema config for more information.
+                checkpoint[f"transformer.{k}"] = v
+        else:
+            print("attempted to load ema weights but no ema weights are specified in the loaded checkpoint.")
+            checkpoint = pre_checkpoint['model']
     else:
-        print("This script currently only supports porting the VQVAE to diffusers. Must pass the --only-vqvae flag.")
-        sys.exit(1)
+        checkpoint = pre_checkpoint['model']
 
-    pipe = VQDiffusionPipeline(vqvae=vqvae_model)
+    del pre_checkpoint
 
+    with init_empty_weights():
+        transformer_model = transformer_model_from_original_config(
+            diffusion_config, transformer_config, content_embedding_config
+        )
+
+    diffusers_transformer_checkpoint = transformer_original_checkpoint_to_diffusers_checkpoint(transformer_model, checkpoint)
+
+    with tempfile.NamedTemporaryFile() as diffusers_transformer_checkpoint_file:
+        torch.save(diffusers_transformer_checkpoint, diffusers_transformer_checkpoint_file.name)
+        del diffusers_transformer_checkpoint
+        del checkpoint
+        load_checkpoint_and_dispatch(transformer_model, diffusers_transformer_checkpoint_file.name, device_map="auto")
+
+    print("done loading transformer")
+
+    ##################################################
+
+    print(f"saving VQ diffusion model, path: {args.dump_path}")
+
+    pipe = VQDiffusionPipeline(vqvae=vqvae_model, transformer=transformer_model)
     pipe.save_pretrained(args.dump_path)
+
+    print("done writing VQ diffusion model")

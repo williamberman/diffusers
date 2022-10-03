@@ -91,6 +91,7 @@ class AttentionBlock(nn.Module):
         hidden_states = (hidden_states + residual) / self.rescale_output_factor
         return hidden_states
 
+
 class ConvAttentionBlock(nn.Module):
     def __init__(
         self, 
@@ -146,8 +147,6 @@ class ConvAttentionBlock(nn.Module):
         hidden_states = (hidden_states + residual) / self.rescale_output_factor
 
         return hidden_states
-
-
 
 
 class SpatialTransformer(nn.Module):
@@ -274,7 +273,7 @@ class CrossAttention(nn.Module):
     """
 
     def __init__(
-        self, query_dim: int, context_dim: Optional[int] = None, heads: int = 8, dim_head: int = 64, dropout: int = 0.0
+        self, query_dim: int, context_dim: Optional[int] = None, heads: int = 8, dim_head: int = 64, dropout: float = 0.0, bias=False
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -287,9 +286,9 @@ class CrossAttention(nn.Module):
         # You can set slice_size with `set_attention_slice`
         self._slice_size = None
 
-        self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
-        self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
-        self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
+        self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias=bias)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias=bias)
 
         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
 

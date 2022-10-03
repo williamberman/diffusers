@@ -103,6 +103,7 @@ _deps = [
     "torch>=1.4",
     "torchvision",
     "transformers>=4.21.0",
+    "einops>=0.5.0"
 ]
 
 # this is a lookup table with items like:
