@@ -3,7 +3,6 @@ from typing import Optional
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.modeling_utils import ModelMixin
 from einops import rearrange
@@ -124,4 +123,4 @@ class GELU2(nn.Module):
         super().__init__()
 
     def forward(self, x):
-        return x * F.sigmoid(1.702 * x)
+        return x * torch.sigmoid(1.702 * x)
