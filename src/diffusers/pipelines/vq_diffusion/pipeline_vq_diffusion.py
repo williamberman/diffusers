@@ -1,6 +1,8 @@
 from ...pipeline_utils import DiffusionPipeline
 from diffusers import VQModel, VQDiffusionTransformer
 
+from typing import List, Union
+from transformers import CLIPTextModel, CLIPTokenizer
 import numpy as np
 import torch
 import PIL
@@ -26,9 +28,20 @@ class VQDiffusionPipeline(DiffusionPipeline):
     vqvae: VQModel
     transformer: VQDiffusionTransformer
 
-    def __init__(self, vqvae: VQModel, transformer: VQDiffusionTransformer):
+    def __init__(
+        self, 
+        vqvae: VQModel, 
+        transformer: VQDiffusionTransformer,
+        text_encoder: CLIPTextModel,
+        tokenizer: CLIPTokenizer,
+    ):
         super().__init__()
-        self.register_modules(vqvae=vqvae, transformer=transformer)
+        self.register_modules(
+            vqvae=vqvae, 
+            transformer=transformer,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+        )
 
     @torch.no_grad()
     def encode(self, image):
@@ -43,3 +56,23 @@ class VQDiffusionPipeline(DiffusionPipeline):
         image = image.cpu().permute(0, 2, 3, 1).numpy()
         image = self.numpy_to_pil(image)
         return image
+
+    @torch.no_grad()
+    def text_embeddings(self, prompt: Union[str, List[str]]):
+        text_input_ids = self.tokenizer(
+            prompt, 
+            padding='max_length', 
+            return_tensors='pt'
+        ).input_ids.to(self.device)
+        
+        text_embeddings = self.text_encoder(text_input_ids).last_hidden_state
+
+        # NOTE: This additional step of normalizing the text embeddings is from VQ-Diffusion.
+        # While CLIP does normalize the pooled output of the text transformer when combining 
+        # the image and text embeddings, CLIP does not directly normalize the last hidden state. 
+        #
+        # CLIP normalizing the pooled output.
+        # https://github.com/huggingface/transformers/blob/d92e22d1f28324f513f3080e5c47c071a3916721/src/transformers/models/clip/modeling_clip.py#L1052-L1053
+        text_embeddings = text_embeddings / text_embeddings.norm(dim=-1, keepdim=True)
+
+        return text_embeddings
