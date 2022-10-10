@@ -35,6 +35,7 @@ from accelerate import init_empty_weights, load_checkpoint_and_dispatch
 from diffusers import VQModel
 from diffusers.models.vq_diffusion_attention import VQDiffusionTransformer
 from diffusers.pipelines import VQDiffusionPipeline
+from diffusers.schedulers import VQDiffusionScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
 from yaml.loader import FullLoader
 
@@ -846,10 +847,16 @@ if __name__ == "__main__":
 
     # done text encoder
 
+    scheduler_model = VQDiffusionScheduler()
+
     print(f"saving VQ diffusion model, path: {args.dump_path}")
 
     pipe = VQDiffusionPipeline(
-        vqvae=vqvae_model, transformer=transformer_model, tokenizer=tokenizer_model, text_encoder=text_encoder_model
+        vqvae=vqvae_model,
+        transformer=transformer_model,
+        tokenizer=tokenizer_model,
+        text_encoder=text_encoder_model,
+        scheduler=scheduler_model,
     )
     pipe.save_pretrained(args.dump_path)
 
