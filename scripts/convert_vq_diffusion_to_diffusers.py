@@ -32,9 +32,8 @@ import torch
 
 import yaml
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
-from diffusers import VQModel
+from diffusers import VQModel, VQDiffusionPipeline, VQDiffusionScheduler
 from diffusers.models.vq_diffusion_attention import VQDiffusionTransformer
-from diffusers.pipelines import VQDiffusionPipeline
 from transformers import CLIPTextModel, CLIPTokenizer
 from yaml.loader import FullLoader
 
@@ -492,7 +491,12 @@ def transformer_model_from_original_config(
 
     depth = original_transformer_config["n_layer"]
     context_dim = original_transformer_config["condition_dim"]
+
     num_embed = original_content_embedding_config["num_embed"]
+    # the number of embeddings in the transformer includes the mask embedding.
+    # the content embedding (the vqvae) does not include the mask embedding.
+    num_embed = num_embed + 1
+
     height = original_transformer_config["content_spatial_size"][0]
     width = original_transformer_config["content_spatial_size"][1]
     dropout = original_transformer_config["resid_pdrop"]
@@ -846,10 +850,23 @@ if __name__ == "__main__":
 
     # done text encoder
 
+    # scheduler
+
+    scheduler_model = VQDiffusionScheduler(
+        # the scheduler has the same number of embeddings as the transformer
+        num_embed=transformer_model.num_embed
+    )
+
+    # done scheduler
+
     print(f"saving VQ diffusion model, path: {args.dump_path}")
 
     pipe = VQDiffusionPipeline(
-        vqvae=vqvae_model, transformer=transformer_model, tokenizer=tokenizer_model, text_encoder=text_encoder_model
+        vqvae=vqvae_model,
+        transformer=transformer_model,
+        tokenizer=tokenizer_model,
+        text_encoder=text_encoder_model,
+        scheduler=scheduler_model,
     )
     pipe.save_pretrained(args.dump_path)
 
