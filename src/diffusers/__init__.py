@@ -29,7 +29,7 @@ if is_torch_available():
         get_scheduler,
     )
     from .pipeline_utils import DiffusionPipeline
-    from .pipelines import DDIMPipeline, DDPMPipeline, KarrasVePipeline, LDMPipeline, PNDMPipeline, ScoreSdeVePipeline
+    from .pipelines import DDIMPipeline, DDPMPipeline, KarrasVePipeline, LDMPipeline, PNDMPipeline, ScoreSdeVePipeline, VQDiffusionPipeline
     from .schedulers import (
         DDIMScheduler,
         DDPMScheduler,
@@ -37,6 +37,7 @@ if is_torch_available():
         PNDMScheduler,
         SchedulerMixin,
         ScoreSdeVeScheduler,
+        VQDiffusionScheduler
     )
     from .training_utils import EMAModel
 else:
