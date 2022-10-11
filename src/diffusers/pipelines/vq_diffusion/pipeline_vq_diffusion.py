@@ -39,6 +39,9 @@ class VQDiffusionPipelineOutput(BaseOutput):
 class VQDiffusionPipeline(DiffusionPipeline):
     vqvae: VQModel
     transformer: VQDiffusionTransformer
+    text_encoder: CLIPTextModel
+    tokenizer: CLIPTokenizer
+    scheduler: VQDiffusionScheduler
 
     def __init__(
         self,

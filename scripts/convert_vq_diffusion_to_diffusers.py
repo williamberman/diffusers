@@ -32,10 +32,8 @@ import torch
 
 import yaml
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
-from diffusers import VQModel
+from diffusers import VQModel, VQDiffusionPipeline, VQDiffusionScheduler
 from diffusers.models.vq_diffusion_attention import VQDiffusionTransformer
-from diffusers.pipelines import VQDiffusionPipeline
-from diffusers.schedulers import VQDiffusionScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
 from yaml.loader import FullLoader
 
