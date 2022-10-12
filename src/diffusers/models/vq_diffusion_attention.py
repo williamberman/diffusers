@@ -2,10 +2,10 @@ from typing import Optional
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.modeling_utils import ModelMixin
-from diffusers.models.embeddings import DalleMaskImageEmbedding
 
 from .attention import CrossAttention
 
@@ -23,20 +23,27 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         width: int,
         diffusion_steps: int,
         dropout: float = 0.0,
+        min_logged_value: float = -70
     ):
         super().__init__()
+
         self.n_heads = n_heads
         self.d_head = d_head
-        inner_dim = n_heads * d_head
+        self.inner_dim = n_heads * d_head
+        self.min_logged_value = min_logged_value
 
+        # The input to the `DalleMaskImageEmbedding` layer is the 
+        # embedding indices from the quantized codebook with an additional
+        # index for the masked value.
+        num_embed_with_mask = num_embed + 1
         self.latent_image_embedding = DalleMaskImageEmbedding(
-            num_embed=num_embed, embed_dim=inner_dim, height=height, width=width
+            num_embed=num_embed_with_mask, embed_dim=self.inner_dim, height=height, width=width
         )
 
         self.transformer_blocks = nn.ModuleList(
             [
                 BasicTransformerBlock(
-                    inner_dim,
+                    self.inner_dim,
                     n_heads,
                     d_head,
                     dropout=dropout,
@@ -48,10 +55,17 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
             ]
         )
 
-        self.norm_out = nn.LayerNorm(inner_dim)
-        self.out = nn.Linear(inner_dim, num_embed)
+        self.norm_out = nn.LayerNorm(self.inner_dim)
+
+        # The output from the transformer is the embedding indices for the 
+        # quantized codebook. It does not include additional index for the
+        # masked value because the transformer predicts the unnoised image
+        # which has no masks
+        self.out = nn.Linear(self.inner_dim, num_embed)
 
     def forward(self, latent_images, cond_emb, t):
+        bsz = latent_images.shape[0]
+
         embedded_latent_images = self.latent_image_embedding(latent_images)
         hidden_states = embedded_latent_images
 
@@ -59,10 +73,57 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
             hidden_states = block(hidden_states, cond_emb, t)
 
         logits = self.out(self.norm_out(hidden_states))
-        out = logits.permute(0, 2, 1)
 
-        return out
+        # equivalent to `torch.zeros((bsz, self.inner_dim, 1)).log().clamp(self.min_logged_value)`
+        log_zero_vector = torch.full((bsz, self.inner_dim, 1), self.min_logged_value, device=logits.device)
 
+        log_pred = F.log_softmax(logits.double(), dim=-1).float().clamp(self.min_logged_value)
+        log_pred = torch.cat((log_pred, log_zero_vector), dim=-1)
+
+        # TODO(will) can remove?
+        log_pred = log_pred.permute(0, 2, 1)
+
+        return log_pred
+
+
+# TODO(will) - document this
+class DalleMaskImageEmbedding(nn.Module):
+    def __init__(
+        self,
+        num_embed,
+        height,
+        width,
+        embed_dim,
+    ):
+        super().__init__()
+
+        self.height = height
+        self.width = width
+        self.num_embed = num_embed
+        self.embed_dim = embed_dim
+
+        self.emb = nn.Embedding(self.num_embed, embed_dim)
+        self.height_emb = nn.Embedding(self.height, embed_dim)
+        self.width_emb = nn.Embedding(self.width, embed_dim)
+
+    def forward(self, index):
+        emb = self.emb(index)
+
+        height_emb = self.height_emb(
+            torch.arange(self.height, device=index.device).view(1, self.height)
+        ).unsqueeze(
+            2
+        )  # 1 x H x D -> 1 x H x 1 x D
+
+        width_emb = self.width_emb(torch.arange(self.width, device=index.device).view(1, self.width)).unsqueeze(
+            1
+        )  # 1 x W x D -> 1 x 1 x W x D
+
+        pos_emb = (height_emb + width_emb).view(1, self.height * self.width, -1)  # 1 x H x W x D -> 1 x L xD
+
+        emb = emb + pos_emb[:, : emb.shape[1], :]
+
+        return emb
 
 class BasicTransformerBlock(nn.Module):
     def __init__(

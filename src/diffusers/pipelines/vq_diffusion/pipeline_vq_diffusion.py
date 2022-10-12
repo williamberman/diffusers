@@ -122,6 +122,8 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
         # get the initial random noise unless the user supplied it
 
+        # TODO I believe the latents are the indices of the of the vectors
+
         # TODO HERE - what's the input shape?
         latents_shape = TODO  # (batch_size * num_images_per_prompt, self.unet.in_channels, height // 8, width // 8)
         latents_dtype = text_embeddings.dtype
