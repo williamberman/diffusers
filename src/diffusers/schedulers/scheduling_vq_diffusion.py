@@ -15,10 +15,11 @@ def log_add_exp(a, b):
     return maximum + torch.log(torch.exp(a - maximum) + torch.exp(b - maximum))
 
 
-def extract(a, t, x_shape):
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+def extract_schedule_parameters(schedule_parameters, t):
+    bsz = t.shape[0]
+    out = schedule_parameters.gather(-1, t)
+    return out.reshape(bsz, 1, 1)
+
 
 # Takes an input of (potentially batched) index vectors.
 # Returns the log of the one hots as column vectors.
@@ -116,10 +117,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_cumprod_ct = torch.log(ctt)
 
         log_1_min_ct = log_1_min_a(log_ct)
-        log_1_min_cumprod_ct = log_1_min_a(self.log_cumprod_ct)
+        log_1_min_cumprod_ct = log_1_min_a(log_cumprod_ct)
 
-        assert log_add_exp(self.log_ct, self.log_1_min_ct).abs().sum().item() < 1.e-5
-        assert log_add_exp(self.log_cumprod_ct, self.log_1_min_cumprod_ct).abs().sum().item() < 1.e-5
+        assert log_add_exp(log_ct, log_1_min_ct).abs().sum().item() < 1.e-5
+        assert log_add_exp(log_cumprod_ct, log_1_min_cumprod_ct).abs().sum().item() < 1.e-5
 
         self.log_at = log_at.float()
         self.log_bt = log_bt.float()
@@ -186,19 +187,20 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         # TODO probably have to add device
         log_one_vector = torch.zeros(bsz, 1, 1)
+
         # equivalent to `torch.zeros((bsz, 1, self.inner_dim)).log().clamp(self.min_logged_value)`
         # NOTE will be slightly different than prev min value
         log_zero_vector = torch.fill((bsz, 1, self.inner_dim), self.min_logged_value)
 
         log_qt = self.q_pred(log_x_t, t)  # q(xt|x0)
         log_qt = log_qt[:, :-1, :]
-        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_0.shape)  # ct~
+        log_cumprod_ct = extract_schedule_parameters(self.log_cumprod_ct, t)  # ct~
         ct_cumprod_vector = log_cumprod_ct.expand(-1, self.mask_class, -1)
         log_qt = (~mask) * log_qt + mask * ct_cumprod_vector
 
         log_qt_one_timestep = self.q_pred_one_timestep(log_x_t, t)  # q(xt|xt_1)
         log_qt_one_timestep = torch.cat((log_qt_one_timestep[:, :-1, :], log_zero_vector), dim=1)
-        log_ct = extract(self.log_ct, t, log_x_0.shape)  # ct
+        log_ct = extract_schedule_parameters(self.log_ct, t)  # ct
         ct_vector = log_ct.expand(-1, self.mask_class, -1)
         ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
         log_qt_one_timestep = (~mask) * log_qt_one_timestep + mask * ct_vector
@@ -211,54 +213,86 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
 
 
-    def q_pred(self, log_x_0, t):  # q(xt|x0)
+    def q_pred(self, log_x_0, t):
         """
-        Calculates equation 4 in log space
+        Calculates equation 4 in log space over a batch of class predictions
 
         q(x_t | x_0) = v^T(x_t) Q_cumprod_t v(x_0)
+                     = Q_cumprod_t[x_t][x_0]
+
+        v(x) is the one-hot column vector with the one-hot value at index x.
+
+        Q_cumprod_t[m][n] = q(x_t = m | x_0 = n)
+
+        Args:
+            log_x_0 (`torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`): 
+                The log probabilities of the latent pixel classes at time step 0
+
+            t (`torch.LongTensor` of shape `(batch_size,)`):
+                Current diffusion steps
+        Returns:
+            `torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`:
+                The log probabilities of the latent pixel classes at time step `t`. Including the
+                0 log probs that the initial image is masked.
         """
-        # log_x_start can be onehot or not
-        t = (t + (self.num_timesteps + 1)) % (self.num_timesteps + 1)
-        log_cumprod_at = extract(self.log_cumprod_at, t, log_x_0.shape)  # at~
-        log_cumprod_bt = extract(self.log_cumprod_bt, t, log_x_0.shape)  # bt~
-        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_0.shape)  # ct~
-        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t, log_x_0.shape)  # 1-ct~
+        log_cumprod_at = extract_schedule_parameters(self.log_cumprod_at, t)
+        log_cumprod_bt = extract_schedule_parameters(self.log_cumprod_bt, t)
+        log_cumprod_ct = extract_schedule_parameters(self.log_cumprod_ct, t)
+        log_1_min_cumprod_ct = extract_schedule_parameters(self.log_1_min_cumprod_ct, t)
 
-        log_probs = torch.cat(
-            [
-                log_add_exp(log_x_0[:, :-1, :] + log_cumprod_at, log_cumprod_bt),
-                log_add_exp(log_x_0[:, -1:, :] + log_1_min_cumprod_ct, log_cumprod_ct),
-            ],
-            dim=1,
-        )
+        # See `q_pred_one_timestep`` for docs on log_probs_unmasked_classes and log_probe_masked_class.
+        # The same explanation holds for the 0 -> t
+        log_probs_unmasked_classes = log_add_exp(log_cumprod_at + log_x_0[:, :-1, :], log_cumprod_bt)
+        log_probs_masked_class = log_add_exp(log_1_min_cumprod_ct + log_x_0[:, -1:, :], log_cumprod_ct)
 
-        return log_probs
+        log_x_t = torch.cat((log_probs_unmasked_classes, log_probs_masked_class), dim=1)
+
+        return log_x_t
 
     def q_pred_one_timestep(self, log_x_t, t):
         """
         Calculates equation 3 in log space over a batch of class predictions
 
         q(x_t | x_{t-1}) = v^T(x_t) Q_t v(x_{t-1})
-                         = Q_t[t][t-1]
+                         = Q_t[x_t][x_{t-1}]
 
         v(x) is the one-hot column vector with the one-hot value at index x.
 
         Q_t[m][n] = q(x_t = m | x_{t-1} = n)
 
         Args:
-            TODO
+            log_x_t (`torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`): 
+                The log probabilities of the latent pixel classes at time steps `t`
 
+            t (`torch.LongTensor` of shape `(batch_size,)`):
+                Current diffusion steps
         Returns:
-            TODO
+            `torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`:
+                The log probabilities of the latent pixel classes at time step `t + 1`
         """
-        log_at = extract(self.log_at, t, log_x_t.shape)
-        log_bt = extract(self.log_bt, t, log_x_t.shape)
-        log_ct = extract(self.log_ct, t, log_x_t.shape)
-        log_1_min_ct = extract(self.log_1_min_ct, t, log_x_t.shape)
+        log_at = extract_schedule_parameters(self.log_at, t)
+        log_bt = extract_schedule_parameters(self.log_bt, t)
+        log_ct = extract_schedule_parameters(self.log_ct, t)
+        log_1_min_ct = extract_schedule_parameters(self.log_1_min_ct, t)
 
-        log_probs = torch.cat(
-            [log_add_exp(log_x_t[:, :-1, :] + log_at, log_bt), log_add_exp(log_x_t[:, -1:, :] + log_1_min_ct, log_ct)],
-            dim=1,
-        )
+        # q(x_{t+1} = a non masked class) = a_t * p(x_t = the same non masked class) + b_t
+        #                                  |_______________________________________|  |___|
+        #                                                       |                       |
+        #                                                       |                       uniform resampling to the same class
+        #                                                       |
+        #                                                       remain same class
+        log_probs_unmasked_classes = log_add_exp(log_at + log_x_t[:, :-1, :], log_bt)
 
-        return log_probs
+        # q(x_{t+1} = masked) = (1 - c_t) * p(x_t = masked) + c_t
+        #                     = p(x_t = masked) - c_t * p(x_t = masked) + c_t
+        #                     = p(x_t = masked) + c_t * (1 - p(x_t = masked))
+        #                      |______________|  |___________________________|
+        #                              |                      |
+        #                              |                      x_t was not masked and was masked on t -> t+1
+        #                              |
+        #                              x_t was already masked on some prior step
+        log_probs_masked_class = log_add_exp(log_1_min_ct + log_x_t[:, -1:, :], log_ct)
+
+        log_x_t_plus_1 = torch.cat((log_probs_unmasked_classes, log_probs_masked_class), dim=1)
+
+        return log_x_t_plus_1
