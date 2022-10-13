@@ -23,7 +23,7 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         width: int,
         diffusion_steps: int,
         dropout: float = 0.0,
-        min_logged_value: float = -70
+        min_logged_value: float = -70.0
     ):
         super().__init__()
 
@@ -77,13 +77,13 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         # equivalent to `torch.zeros((bsz, self.inner_dim, 1)).log().clamp(self.min_logged_value)`
         log_zero_vector = torch.full((bsz, self.inner_dim, 1), self.min_logged_value, device=logits.device)
 
-        log_pred = F.log_softmax(logits.double(), dim=-1).float().clamp(self.min_logged_value)
-        log_pred = torch.cat((log_pred, log_zero_vector), dim=-1)
+        log_x_0 = F.log_softmax(logits.double(), dim=-1).float().clamp(self.min_logged_value)
+        log_x_0 = torch.cat((log_x_0, log_zero_vector), dim=-1)
 
         # TODO(will) can remove?
-        log_pred = log_pred.permute(0, 2, 1)
+        log_x_0 = log_x_0.permute(0, 2, 1)
 
-        return log_pred
+        return log_x_0
 
 
 # TODO(will) - document this

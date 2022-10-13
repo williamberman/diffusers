@@ -142,7 +142,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # predict the un-noised image
-            x0_pred = TODO  # self.transformer(latents, t, encoder_hidden_states=text_embeddings).sample
+            log_x_start = TODO  # self.transformer(latents, t, encoder_hidden_states=text_embeddings).sample
 
             # compute the previous noisy sample x_t -> x_t-1
             latents = TODO  # self.scheduler.step(x0_pred, t, latents).prev_sample

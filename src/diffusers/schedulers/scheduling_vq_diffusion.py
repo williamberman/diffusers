@@ -3,6 +3,7 @@ from typing import Tuple, Union
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
@@ -38,78 +39,222 @@ def log_onehot_to_index(log_x):
     return log_x.argmax(1)
 
 
+def log_sample_categorical(logits, num_classes):
+    uniform = torch.rand_like(logits)
+    gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
+    sample = (gumbel_noise + logits).argmax(dim=1)
+    log_sample = index_to_log_onehot(sample, num_classes)
+    return log_sample
+
+def log_1_min_a(a):
+    return torch.log(1 - a.exp() + 1e-40)
+
+def alpha_schedules(num_diffusion_timesteps, att_1 = 0.99999, att_T = 0.000009):
+    att = np.arange(0, num_diffusion_timesteps)/(num_diffusion_timesteps-1)*(att_T - att_1) + att_1
+    att = np.concatenate(([1], att))
+    at = att[1:]/att[:-1]
+    att = np.concatenate((att[1:], [1]))
+    return at, att
+
+def gamma_schedules(time_step, ctt_1 = 0.000009, ctt_T = 0.99999):
+    ctt = np.arange(0, time_step)/(time_step-1)*(ctt_T - ctt_1) + ctt_1
+    ctt = np.concatenate(([0], ctt))
+    one_minus_ctt = 1 - ctt
+    one_minus_ct = one_minus_ctt[1:] / one_minus_ctt[:-1]
+    ct = 1-one_minus_ct
+    ctt = np.concatenate((ctt[1:], [0]))
+    return ct, ctt
+
 @dataclass
 class VQDiffusionSchedulerOutput(BaseOutput):
     ...
 
 
 class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
+    """
+    TODO
+
+    For more details, see the original paper: https://arxiv.org/abs/2111.14822
+
+
+    Args:
+        TODO
+    """
     @register_to_config
-    def __init__(self):
-        ...
+    def __init__(
+        self,
+        # number of classes, including the mask
+        num_classes: int,
+        num_train_timesteps: int = 100,
+        min_logged_value: float = -70.0,
+    ):
+        self.num_classes = num_classes
+        self.min_logged_value = min_logged_value
 
-    def set_timestamps(self):
-        ...
+        # By convention, the index for the mask class is the last class index
+        self.mask_class = self.num_classes - 1
 
-    def step(self, log_x_start, t, log_x) -> Union[VQDiffusionSchedulerOutput, Tuple]:
-        log_model_pred = self.q_posterior(log_x_start=log_x_start, log_x_t=log_x, t=t)
+        at, att = alpha_schedules(num_train_timesteps)
+        ct, ctt = gamma_schedules(num_train_timesteps)
 
-        out = self.log_sample_categorical(log_model_pred)
+        num_non_mask_classes = self.num_classes - 1
+        bt = (1-at-ct) / num_non_mask_classes
+        btt = (1-att-ctt) / num_non_mask_classes
+
+        at = torch.tensor(at.astype('float64'))
+        bt = torch.tensor(bt.astype('float64'))
+        ct = torch.tensor(ct.astype('float64'))
+        log_at = torch.log(at)
+        log_bt = torch.log(bt)
+        log_ct = torch.log(ct)
+
+        att = torch.tensor(att.astype('float64'))
+        btt = torch.tensor(btt.astype('float64'))
+        ctt = torch.tensor(ctt.astype('float64'))
+        log_cumprod_at = torch.log(att)
+        log_cumprod_bt = torch.log(btt)
+        log_cumprod_ct = torch.log(ctt)
+
+        log_1_min_ct = log_1_min_a(log_ct)
+        log_1_min_cumprod_ct = log_1_min_a(self.log_cumprod_ct)
+
+        assert log_add_exp(self.log_ct, self.log_1_min_ct).abs().sum().item() < 1.e-5
+        assert log_add_exp(self.log_cumprod_ct, self.log_1_min_cumprod_ct).abs().sum().item() < 1.e-5
+
+        self.log_at = log_at.float()
+        self.log_bt = log_bt.float()
+        self.log_ct = log_ct.float()
+        self.log_cumprod_at = log_cumprod_at.float()
+        self.log_cumprod_bt = log_cumprod_bt.float()
+        self.log_cumprod_ct = log_cumprod_ct.float()
+        self.log_1_min_ct = log_1_min_ct.float()
+        self.log_1_min_cumprod_ct = log_1_min_cumprod_ct.float()
+
+        # setable values
+        self.num_inference_steps = None
+        self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy())
+
+
+    def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None):
+        """
+        Sets the discrete timesteps used for the diffusion chain. Supporting function to be run before inference.
+
+        Args:
+            num_inference_steps (`int`):
+                the number of diffusion steps used when generating samples with a pre-trained model.
+        """
+        self.num_inference_steps = num_inference_steps
+        timesteps = torch.from_numpy(np.arange(0, self.num_inference_steps)[::-1].copy())
+        self.timesteps = torch.from_numpy(timesteps).to(device)
+
+
+    def step(self, *, log_x_0, log_x_t, t) -> Union[VQDiffusionSchedulerOutput, Tuple]:
+        """
+        log_x_start is the log probs of the unnoised image probabilities. probabilities as col vectors
+        (batch, )
+
+        i.e. log_x_start[batch, class probability, latent pixel]
+        """
+        log_model_pred = self.q_posterior(log_x_0=log_x_0, log_x_t=log_x_t, t=t)
+
+        out = log_sample_categorical(log_model_pred)
 
         return out
 
-    def q_posterior(self, log_x_start, log_x_t, t):  # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
-        # notice that log_x_t is onehot
-        assert t.min().item() >= 0 and t.max().item() < self.num_timesteps
-        batch_size = log_x_start.size()[0]
+    def q_posterior(self, *, log_x_0, log_x_t, t):
+        """
+        Calculates Equation 11 in log space
+
+        p(x_{t-1} | x_t, y) = sum( q(x_{t-1} | x_t, x_0') p(x_0' | x_t, y) )
+
+        Where: 
+        - The sum is over the predicted classes for the denoised image.
+        - Writing \tilde{x}_{0} as x_0'.
+        - Writing p_{\theta} as p
+        - x_0' is the noiseless token distribution predicted by the transformer. 
+
+        Args:
+            TODO
+
+        Returns:
+            TODO
+        """
+        bsz = log_x_0.size()[0]
+
         onehot_x_t = log_onehot_to_index(log_x_t)
-        mask = (onehot_x_t == self.num_classes - 1).unsqueeze(1)
-        log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_x_t)
-        log_zero_vector = torch.log(log_one_vector + 1.0e-30).expand(-1, -1, self.content_seq_len)
+        mask = (onehot_x_t == self.mask_class).unsqueeze(1)
+
+        # TODO probably have to add device
+        log_one_vector = torch.zeros(bsz, 1, 1)
+        # equivalent to `torch.zeros((bsz, 1, self.inner_dim)).log().clamp(self.min_logged_value)`
+        # NOTE will be slightly different than prev min value
+        log_zero_vector = torch.fill((bsz, 1, self.inner_dim), self.min_logged_value)
 
         log_qt = self.q_pred(log_x_t, t)  # q(xt|x0)
         log_qt = log_qt[:, :-1, :]
-        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)  # ct~
-        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_classes - 1, -1)
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_0.shape)  # ct~
+        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.mask_class, -1)
         log_qt = (~mask) * log_qt + mask * ct_cumprod_vector
 
         log_qt_one_timestep = self.q_pred_one_timestep(log_x_t, t)  # q(xt|xt_1)
         log_qt_one_timestep = torch.cat((log_qt_one_timestep[:, :-1, :], log_zero_vector), dim=1)
-        log_ct = extract(self.log_ct, t, log_x_start.shape)  # ct
-        ct_vector = log_ct.expand(-1, self.num_classes - 1, -1)
+        log_ct = extract(self.log_ct, t, log_x_0.shape)  # ct
+        ct_vector = log_ct.expand(-1, self.mask_class, -1)
         ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
         log_qt_one_timestep = (~mask) * log_qt_one_timestep + mask * ct_vector
 
-        q = log_x_start[:, :-1, :] - log_qt
+        q = log_x_0[:, :-1, :] - log_qt
         q = torch.cat((q, log_zero_vector), dim=1)
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
         q = q - q_log_sum_exp
         log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t - 1) + log_qt_one_timestep + q_log_sum_exp
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
 
-    def q_pred(self, log_x_start, t):  # q(xt|x0)
+
+    def q_pred(self, log_x_0, t):  # q(xt|x0)
+        """
+        Calculates equation 4 in log space
+
+        q(x_t | x_0) = v^T(x_t) Q_cumprod_t v(x_0)
+        """
         # log_x_start can be onehot or not
         t = (t + (self.num_timesteps + 1)) % (self.num_timesteps + 1)
-        log_cumprod_at = extract(self.log_cumprod_at, t, log_x_start.shape)  # at~
-        log_cumprod_bt = extract(self.log_cumprod_bt, t, log_x_start.shape)  # bt~
-        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)  # ct~
-        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t, log_x_start.shape)  # 1-ct~
+        log_cumprod_at = extract(self.log_cumprod_at, t, log_x_0.shape)  # at~
+        log_cumprod_bt = extract(self.log_cumprod_bt, t, log_x_0.shape)  # bt~
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_0.shape)  # ct~
+        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t, log_x_0.shape)  # 1-ct~
 
         log_probs = torch.cat(
             [
-                log_add_exp(log_x_start[:, :-1, :] + log_cumprod_at, log_cumprod_bt),
-                log_add_exp(log_x_start[:, -1:, :] + log_1_min_cumprod_ct, log_cumprod_ct),
+                log_add_exp(log_x_0[:, :-1, :] + log_cumprod_at, log_cumprod_bt),
+                log_add_exp(log_x_0[:, -1:, :] + log_1_min_cumprod_ct, log_cumprod_ct),
             ],
             dim=1,
         )
 
         return log_probs
 
-    def q_pred_one_timestep(self, log_x_t, t):  # q(xt|xt_1)
-        log_at = extract(self.log_at, t, log_x_t.shape)  # at
-        log_bt = extract(self.log_bt, t, log_x_t.shape)  # bt
-        log_ct = extract(self.log_ct, t, log_x_t.shape)  # ct
-        log_1_min_ct = extract(self.log_1_min_ct, t, log_x_t.shape)  # 1-ct
+    def q_pred_one_timestep(self, log_x_t, t):
+        """
+        Calculates equation 3 in log space over a batch of class predictions
+
+        q(x_t | x_{t-1}) = v^T(x_t) Q_t v(x_{t-1})
+                         = Q_t[t][t-1]
+
+        v(x) is the one-hot column vector with the one-hot value at index x.
+
+        Q_t[m][n] = q(x_t = m | x_{t-1} = n)
+
+        Args:
+            TODO
+
+        Returns:
+            TODO
+        """
+        log_at = extract(self.log_at, t, log_x_t.shape)
+        log_bt = extract(self.log_bt, t, log_x_t.shape)
+        log_ct = extract(self.log_ct, t, log_x_t.shape)
+        log_1_min_ct = extract(self.log_1_min_ct, t, log_x_t.shape)
 
         log_probs = torch.cat(
             [log_add_exp(log_x_t[:, :-1, :] + log_at, log_bt), log_add_exp(log_x_t[:, -1:, :] + log_1_min_ct, log_ct)],
@@ -117,11 +262,3 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         )
 
         return log_probs
-
-    # use gumbel to sample onehot vector from log probability
-    def log_sample_categorical(self, logits):
-        uniform = torch.rand_like(logits)
-        gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
-        sample = (gumbel_noise + logits).argmax(dim=1)
-        log_sample = index_to_log_onehot(sample, self.num_classes)
-        return log_sample
