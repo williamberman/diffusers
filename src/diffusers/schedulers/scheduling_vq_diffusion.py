@@ -36,16 +36,12 @@ def index_to_log_onehot(x, num_classes):
     return log_x
 
 
-def log_onehot_to_index(log_x):
-    return log_x.argmax(1)
-
-
-def log_sample_categorical(logits, num_classes):
+def gumbel_noised(logits):
     uniform = torch.rand_like(logits)
     gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
-    sample = (gumbel_noise + logits).argmax(dim=1)
-    log_sample = index_to_log_onehot(sample, num_classes)
-    return log_sample
+    noised = gumbel_noise + logits
+    return noised
+
 
 def log_1_min_a(a):
     return torch.log(1 - a.exp() + 1e-40)
@@ -156,11 +152,15 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         i.e. log_x_start[batch, class probability, latent pixel]
         """
-        log_model_pred = self.q_posterior(log_x_0=log_x_0, log_x_t=log_x_t, t=t)
+        log_x_t_min_1 = self.q_posterior(log_x_0=log_x_0, log_x_t=log_x_t, t=t)
 
-        out = log_sample_categorical(log_model_pred)
+        log_x_t_min_1 = gumbel_noised(log_x_t_min_1)
 
-        return out
+        x_t_min_1_sample = log_x_t_min_1.argmax(1)
+
+        log_x_t_min_1 = index_to_log_onehot(x_t_min_1_sample, self.num_classes)
+
+        return log_x_t_min_1
 
     def q_posterior(self, *, log_x_0, log_x_t, t):
         """
@@ -171,18 +171,26 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         Where: 
         - The sum is over the predicted classes for the denoised image.
         - Writing \tilde{x}_{0} as x_0'.
+            - x_0' is the noiseless token distribution predicted by the transformer. 
         - Writing p_{\theta} as p
-        - x_0' is the noiseless token distribution predicted by the transformer. 
 
         Args:
-            TODO
+            log_x_0 (`torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`): 
+                The log probabilities of the latent pixel classes at time step 0
+
+            log_x_t (`torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`): 
+                The log probabilities of the latent pixel classes at time steps `t`
+
+            t (`torch.LongTensor` of shape `(batch_size,)`):
+                Current diffusion steps
 
         Returns:
-            TODO
+            `torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`:
+                The log probabilities of the latent pixel classes at time step `t-1`.
         """
         bsz = log_x_0.size()[0]
 
-        onehot_x_t = log_onehot_to_index(log_x_t)
+        onehot_x_t = log_x_t.argmax(1)
         mask = (onehot_x_t == self.mask_class).unsqueeze(1)
 
         # TODO probably have to add device
