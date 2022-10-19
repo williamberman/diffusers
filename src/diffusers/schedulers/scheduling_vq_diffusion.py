@@ -133,6 +133,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         if not return_dict:
             return (x_t_min_1,)
 
+        num_masked = (x_t_min_1 == self.mask_class).count_nonzero()
+        print(f"num masked {num_masked}")
+
         # TODO remove
         torch.save(x_t_min_1, f"/content/diffusers-out/x_t_min_1-{t[0]}.pt")
 
