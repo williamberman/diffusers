@@ -332,7 +332,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         mask_class_mask = klass == self.mask_class
 
         log_Q_t[:, mask_class_mask] = c
-        log_Q_t[-1, mask_class_mask] = 0 # 0 == log(1)
+
+        if cumulative:
+            # Not possible to transition from an initial masked pixel because the initial
+            # image is completely unnoised.
+            log_Q_t[-1, mask_class_mask] = self.min_logged_value 
+        else:
+            log_Q_t[-1, mask_class_mask] = 0 # 0 == log(1)
+
 
         non_mask_class_mask = ~mask_class_mask
 
