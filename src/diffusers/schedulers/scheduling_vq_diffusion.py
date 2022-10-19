@@ -196,9 +196,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             step_2 = q_x_t_min_1_given_x_0 @ step_1
             log_step_2 = step_2.log()
 
-            # NOTE(will) - should see discrepancies by step 2 - should not need to investigate step 3
-            import pdb; pdb.set_trace()
-
             # q(x_t | x_{t-1}) * [q(x_{t-1} | x_0=C_0) * p(x_0=C_0) / q(x_t | x_0=C_0) + ... + q(x_{t-1} | x_0=C_k) * p(x_0=C_k) / q(x_t | x_0=C_k)]
             log_step_3 = log_q_x_t_given_x_t_min_1 + log_step_2
             
