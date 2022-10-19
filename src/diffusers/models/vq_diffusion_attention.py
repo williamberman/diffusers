@@ -64,7 +64,7 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         self.out = nn.Linear(self.inner_dim, self.num_embed - 1)
 
     def forward(self, latent_images, cond_emb, t):
-        bsz = latent_images.shape[0]
+        # bsz = latent_images.shape[0]
 
         embedded_latent_images = self.latent_image_embedding(latent_images)
         hidden_states = embedded_latent_images
@@ -81,12 +81,12 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
 
         # TODO document why we append the zero vector
         # equivalent to `torch.zeros((bsz, 1, self.num_latent_pixels)).log().clamp(self.min_logged_value)`
-        log_zero_vector = torch.full((bsz, 1, self.num_latent_pixels), self.min_logged_value, device=logits.device)
+        # log_zero_vector = torch.full((bsz, 1, self.num_latent_pixels), self.min_logged_value, device=logits.device)
 
         log_p_x_0 = F.log_softmax(logits.double(), dim=1).float().clamp(self.min_logged_value)
 
         # (batch, self.num_embed, self.inner_dim)
-        log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
+        # log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
 
         return log_p_x_0
 

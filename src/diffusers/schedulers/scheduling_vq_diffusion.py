@@ -185,10 +185,18 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             log_q_x_t_given_x_0 = self.log_Q_t_known_transitioning_to_class(t=t_batch, klass=x_t_class, device=device, cumulative=True)
 
             # TODO document here
+            # full matrices
+            # conversion between logspace and not
+
+            # p(x_0) / q(x_t | x_0)
             log_step_1 = log_p_x_0[batch, :, :] - log_q_x_t_given_x_0
             step_1 = log_step_1.exp()
+
+            # q(x_{t-1} | x_0=C_0) * p(x_0=C_0) / q(x_t | x_0=C_0) + ... + q(x_{t-1} | x_0=C_k) * p(x_0=C_k) / q(x_t | x_0=C_k)
             step_2 = q_x_t_min_1_given_x_0 @ step_1
             log_step_2 = step_2.log()
+
+            # q(x_t | x_{t-1}) * [q(x_{t-1} | x_0=C_0) * p(x_0=C_0) / q(x_t | x_0=C_0) + ... + q(x_{t-1} | x_0=C_k) * p(x_0=C_k) / q(x_t | x_0=C_k)]
             log_step_3 = log_q_x_t_given_x_t_min_1 + log_step_2
             
             log_p_x_t_min_1_given_x_t[batch, :, :] = log_step_3 
@@ -219,6 +227,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
                 If cumulative is `True`, the columns are taken from the transition matrix `0`->`t`.
 
         Returns:
+            TODO add fixed dimensions for cumulative
+
             `torch.FloatTensor` of shape `(num classes, num classes)`:
                 The log probabilities of the transition matrix (cumulative or non-cumulative).
 
@@ -245,23 +255,23 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             a = self.log_cumprod_at[t]
             b = self.log_cumprod_bt[t]
             c = self.log_cumprod_ct[t]
+
+            shape = (self.num_embed, self.num_embed - 1)
         else:
             a = self.log_at[t]
             b = self.log_bt[t]
             c = self.log_ct[t]
 
-        shape = (self.num_embed, self.num_embed)
+            shape = (self.num_embed, self.num_embed)
+
 
         log_Q_t = torch.full(shape, b, device=device)
         log_Q_t.fill_diagonal_(a + b)
         log_Q_t[-1, :] = c
 
-        if cumulative:
-            # Not possible to transition from an initial masked pixel because the initial
-            # image is completely unnoised.
+        if not cumulative:
             log_Q_t[:, -1] = self.min_logged_value
-        else:
-            log_Q_t[:, -1] = 0 # 0 = log(1)
+            log_Q_t[-1, -1] = 0 # 0 = log(1)
 
         return log_Q_t
 
@@ -288,6 +298,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
                 If cumulative is `True`, the columns are taken from the transition matrix `0`->`t`.
 
         Returns:
+            TODO add fixed dimensions for cumulative
+
             `torch.FloatTensor` of shape `(num classes, num latent pixels)`:
                 Each _column_ of the returned matrix is a _row_ of log probabilities of the probability 
                 transition matrix.
@@ -318,33 +330,35 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             a = self.log_cumprod_at[t]
             b = self.log_cumprod_bt[t]
             c = self.log_cumprod_ct[t]
+
+            shape = (self.num_embed - 1, num_latent_pixels)
         else:
             a = self.log_at[t]
             b = self.log_bt[t]
             c = self.log_ct[t]
 
-        shape = (self.num_embed, num_latent_pixels)
+            shape = (self.num_embed, num_latent_pixels)
 
         log_Q_t = torch.empty(shape, device=device)
 
-        # Set the forward probability distributions 
+        # Transitioning to masked latent pixels
 
         mask_class_mask = klass == self.mask_class
 
         log_Q_t[:, mask_class_mask] = c
 
-        if cumulative:
-            # Not possible to transition from an initial masked pixel because the initial
-            # image is completely unnoised.
-            log_Q_t[-1, mask_class_mask] = self.min_logged_value 
-        else:
+        if not cumulative:
             log_Q_t[-1, mask_class_mask] = 0 # 0 == log(1)
 
+
+        # Transitioning to non-masked latent pixels
 
         non_mask_class_mask = ~mask_class_mask
 
         log_Q_t[:, non_mask_class_mask] = b
         log_Q_t[klass[non_mask_class_mask], non_mask_class_mask] = a + b
-        log_Q_t[-1, non_mask_class_mask] = self.min_logged_value
+
+        if not cumulative:
+            log_Q_t[-1, non_mask_class_mask] = self.min_logged_value
 
         return log_Q_t
