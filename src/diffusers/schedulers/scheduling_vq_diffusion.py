@@ -185,8 +185,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             log_q_x_t_given_x_0 = self.log_Q_t_known_transitioning_to_class(t=t_batch, klass=x_t_class, device=device, cumulative=True)
 
             # TODO document here
-            # full matrices
-            # conversion between logspace and not
+            # - full matrices
+            # - conversion between logspace and not
 
             # p(x_0) / q(x_t | x_0)
             log_step_1 = log_p_x_0[batch, :, :] - log_q_x_t_given_x_0
@@ -197,6 +197,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             log_step_2 = step_2.log()
 
             # NOTE(will) - should see discrepancies by step 2 - should not need to investigate step 3
+            import pdb; pdb.set_trace()
 
             # q(x_t | x_{t-1}) * [q(x_{t-1} | x_0=C_0) * p(x_0=C_0) / q(x_t | x_0=C_0) + ... + q(x_{t-1} | x_0=C_k) * p(x_0=C_k) / q(x_t | x_0=C_k)]
             log_step_3 = log_q_x_t_given_x_t_min_1 + log_step_2
