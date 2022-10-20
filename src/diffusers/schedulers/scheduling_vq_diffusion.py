@@ -187,11 +187,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         klass_log_onehot = xindex_to_log_onehot(klass, self.num_embed)
 
-        klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :]
+        klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :].unsqueeze(0)
 
         klass_log_onehot = klass_log_onehot[:, :-1, :]
-
-        import pdb; pdb.set_trace()
 
         log_Q_t = (klass_log_onehot + a).logaddexp(b)
 
