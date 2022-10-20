@@ -141,11 +141,13 @@ class VQDiffusionPipeline(DiffusionPipeline):
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # predict the un-noised image
             log_p_x_0 = self.transformer(latent_images=x_t, cond_emb=text_embeddings, t=t)
+            xlog_p_x_0 = log_p_x_0
 
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
-            # remove `-inf`s
+
+            # remove `log(0)`'s (`-inf`s)
             log_p_x_0 = log_p_x_0.clamp(-70)
-            xlog_p_x_0 = self.truncate_old(log_p_x_0.clamp(-70), truncation_rate)
+            xlog_p_x_0 = self.truncate_old(xlog_p_x_0.clamp(-70), truncation_rate)
 
             assert (log_p_x_0 == xlog_p_x_0).all()
 
@@ -195,7 +197,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
         rv = log_p_x_0.clone()
 
-        rv[~keep_mask] = -torch.inf
+        rv[~keep_mask] = -torch.inf # -inf = log(0)
 
         return rv
 
