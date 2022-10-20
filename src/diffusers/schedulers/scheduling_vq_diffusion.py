@@ -125,6 +125,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         torch.save(log_p_x_0, f"/content/diffusers-out/log_p_x_0-{t[0]}.pt")
 
         log_x_t_min_1 = self.q_posterior(log_p_x_0=log_p_x_0, x_t=x_t, t=t)
+        xlog_x_t_min_1 = log_x_t_min_1
 
         log_x_t_min_1 = gumbel_noised(log_x_t_min_1)
 
@@ -137,9 +138,15 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         print()
         print("***********")
+        print()
         print(f"num masked {num_masked}")
+        print()
+        print("unnoised mask probabilities")
+        print(xlog_x_t_min_1)
+        print()
         print("noised mask probabilities")
         print(log_x_t_min_1[-1, :].exp())
+        print()
         print("***********")
         print()
 
