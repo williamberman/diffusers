@@ -156,7 +156,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         q = q - q_log_sum_exp
 
-        new_q = self.xqpred(q, t)
+        new_q = self.xqpred(q, t[0] - 1)
 
         q = torch.cat((q, log_zero_vector), dim=1)
         q = self.q_pred(q, t-1)
