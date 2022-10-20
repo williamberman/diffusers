@@ -169,7 +169,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
     def step_1(self, x_t, t):
         orig = self.step_1_orig(x_t, t)
-        new = self.step_1_new(x_t, t)
+        new = self.log_Q_t_cumulative_transitioning_to_known_class(t=t[0], klass=x_t)
         assert (orig == new).all()
         return new
 
@@ -186,24 +186,70 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return log_qt
 
-    def step_1_new(self, x_t, t):
-        assert len(t.shape) == 1
-        assert t.shape[0] == 1
-        t = t[0]
+    def log_Q_t_cumulative_transitioning_to_known_class(self, *, t, klass):
+        """
+        Returns the log probabilities of the rows from the cumulative transition matrix 
+        for each latent pixel in `klass`.
 
+        See equation (7) for the non-cumulative transition matrix.
+
+        Args:
+            t (torch.Long):
+                The timestep that determines which transition matrix is used.
+
+            klass (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
+                The classes of each latent pixel at time `t`.
+
+        Returns:
+            `torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`:
+                Each _row_ of the returned matrix is a _row_ of log probabilities of the probability 
+                transition matrix.
+
+                Returns `self.num_classes - 1` rows because the initial latent pixel cannot be masked
+                
+                Where:
+                - `q_n` is the probability distribution for the forward process of the `n`th latent pixel.
+                - C_0 is a class of a latent pixel embedding
+                - C_k is the class of the masked latent pixel
+
+                result (omitting logarithms):
+                q_0_cumulative(x_t | x_0 = C_0) ... q_n_cumulative(x_t | x_0 = C_0)
+                          .               .                          .
+                          .                        .                 .
+                          .                               .          .
+                q_0_cumulative(x_t | x_0 = C_k) ... q_n_cumulative(x_t | x_0 = C_k)
+        """
         a = self.log_cumprod_at[t]
         b = self.log_cumprod_bt[t]
         c = self.log_cumprod_ct[t]
 
-        res = xindex_to_log_onehot(x_t, self.num_embed)[:, :-1, :]
-        
-        res = (res + a).logaddexp(b)
-        
-        mask_class_mask = x_t == self.mask_class
-        mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
-        res[mask_class_mask] = c
+        log_Q_t = xindex_to_log_onehot(klass, self.num_embed)
 
-        return res
+        # `index_to_log_onehot` will add onehot vectors for masked pixels,
+        # so the default one hot matrix has one too many rows. See the doc string
+        # for an explanation of the dimensionality of the returned matrix.
+        log_Q_t = log_Q_t[:, :-1, :]
+
+        # this is a cheeky trick using the log one-hot vectors.
+        #
+        # Don't worry about what values this sets in the columns that mark transitions
+        # to masked latent pixels. They are overwrote later with the `mask_class_mask`.
+        #
+        # Looking at the below logspace formula in base 10, each value will evaluate to either 
+        # `1 * a + b = a + b` where `log_Q_t` has the one hot value in the column
+        # or 
+        # `0 * a + b = b` where `log_Q_t` has the 0 values in the column.
+        #
+        # See equation 7 for more details.
+        log_Q_t = (log_Q_t + a).logaddexp(b)
+
+        # The whole column of each masked pixel is `c`
+        mask_class_mask = klass == self.mask_class
+        mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
+        log_Q_t[mask_class_mask] = c
+
+        return log_Q_t
+
 
 
     def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
