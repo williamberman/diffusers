@@ -124,7 +124,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         model_log_prob = self.q_posterior(log_p_x_0, log_x_t, t)
         out = self.log_sample_categorical(model_log_prob)
 
-        x_t_min_1 = out
+        x_t_min_1 = out.argmax(dim=1)
 
         if not return_dict:
             return (x_t_min_1,)
