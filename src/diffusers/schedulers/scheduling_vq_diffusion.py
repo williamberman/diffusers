@@ -208,7 +208,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
     def q_pred(self, log_x_start, t):           # q(xt|x0)
         # log_x_start can be onehot or not
-        t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
+        # t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
         log_cumprod_at = extract(self.log_cumprod_at, t, log_x_start.shape)         # at~
         log_cumprod_bt = extract(self.log_cumprod_bt, t, log_x_start.shape)         # bt~
         log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)         # ct~
