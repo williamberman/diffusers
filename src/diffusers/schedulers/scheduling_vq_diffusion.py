@@ -3,17 +3,15 @@ from typing import Tuple, Union
 
 import torch
 import numpy as np
+import torch.nn.functional as F
 
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from .scheduling_utils import SchedulerMixin
 
-def gumbel_noised(logits):
-    uniform = torch.rand_like(logits, device=logits.device)
-    gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
-    noised = gumbel_noise + logits
-    return noised
-
+@dataclass
+class VQDiffusionSchedulerOutput(BaseOutput):
+    x_t_min_1: torch.LongTensor
 
 def alpha_schedules(num_diffusion_timesteps, att_1 = 0.99999, att_T = 0.000009):
     att = np.arange(0, num_diffusion_timesteps)/(num_diffusion_timesteps-1)*(att_T - att_1) + att_1
@@ -31,12 +29,6 @@ def gamma_schedules(time_step, ctt_1 = 0.000009, ctt_T = 0.99999):
     ct = 1-one_minus_ct
     ctt = np.concatenate((ctt[1:], [0]))
     return ct, ctt
-
-
-@dataclass
-class VQDiffusionSchedulerOutput(BaseOutput):
-    x_t_min_1: torch.LongTensor
-
 
 class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     """
@@ -83,12 +75,17 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_cumprod_bt = torch.log(btt)
         log_cumprod_ct = torch.log(ctt)
 
+        log_1_min_ct = log_1_min_a(log_ct)
+        log_1_min_cumprod_ct = log_1_min_a(log_cumprod_ct)
+
         self.log_at = log_at.float()
         self.log_bt = log_bt.float()
         self.log_ct = log_ct.float()
         self.log_cumprod_at = log_cumprod_at.float()
         self.log_cumprod_bt = log_cumprod_bt.float()
         self.log_cumprod_ct = log_cumprod_ct.float()
+        self.log_1_min_ct = log_1_min_ct.float()
+        self.log_1_min_cumprod_ct = log_1_min_cumprod_ct.float()
 
         # setable values
         self.num_inference_steps = None
@@ -115,267 +112,140 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         t,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
-        """
-        log_x_start is the log probs of the unnoised image probabilities. probabilities as col vectors
-        (batch, )
+        # add the zero vector to log_p_x_0
+        bsz, _, num_latent_pixels = log_p_x_0.shape
+        log_zero_vector = torch.full((bsz, 1, num_latent_pixels), self.min_logged_value, device=log_p_x_0.device)
+        log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
 
-        i.e. log_x_start[batch, class probability, latent pixel]
-        """
-        # TODO remove
-        torch.save(log_p_x_0, f"/content/diffusers-out/log_p_x_0-{t[0]}.pt")
+        # convert x_t into log_probs
+        log_x_t = index_to_log_onehot(x_t, self.num_embed)
 
-        log_x_t_min_1 = self.q_posterior(log_p_x_0=log_p_x_0, x_t=x_t, t=t)
-        xlog_x_t_min_1 = log_x_t_min_1
+        model_log_prob = self.q_posterior(log_p_x_0, log_x_t, t)
+        out = self.log_sample_categorical(model_log_prob)
 
-        log_x_t_min_1 = gumbel_noised(log_x_t_min_1)
-
-        x_t_min_1 = log_x_t_min_1.argmax(1)
+        x_t_min_1 = out
 
         if not return_dict:
             return (x_t_min_1,)
 
-        num_masked = (x_t_min_1 == self.mask_class).count_nonzero()
-
-        print()
-        print("***********")
-        print()
-        print(f"num masked {num_masked}")
-        print()
-        print("unnoised mask probabilities")
-        print(xlog_x_t_min_1[0, -1, :].exp())
-        print()
-        print("noised mask probabilities")
-        print(log_x_t_min_1[0, -1, :].exp())
-        print()
-        print("***********")
-        print()
-
-        # TODO remove
-        torch.save(x_t_min_1, f"/content/diffusers-out/x_t_min_1-{t[0]}.pt")
-
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
+    def q_posterior(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
+        # notice that log_x_t is onehot
+        # assert t.min().item() >= 0 and t.max().item() < self.num_timesteps
+        _, _, content_seq_len = log_x_t
 
-    def q_posterior(self, *, log_p_x_0, x_t, t):
-        """
-        Calculates Equation 11 in log space
+        batch_size = log_x_start.size()[0]
+        onehot_x_t = log_onehot_to_index(log_x_t)
+        mask = (onehot_x_t == self.num_embed-1).unsqueeze(1) 
+        log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_x_t)
+        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
 
-        p(x_{t-1} | x_t, y) = sum( q(x_{t-1} | x_t, x_0') p(x_0' | x_t, y) )
-
-        Where: 
-        - The sum is over the predicted classes for the denoised image.
-        - Writing \tilde{x}_{0} as x_0'.
-            - x_0' is the noiseless token distribution predicted by the transformer. 
-        - Writing p_{\theta} as p
-
-        Args:
-            log_x_0 (`torch.FloatTensor` of shape `(batch_size, num classes, num latent pixels)`): 
-                The log probabilities of the latent pixel classes at time step 0
-
-            x_t (`torch.FloatTensor` of shape `(batch_size, num latent pixels)`): 
-                The predictions of the latent pixel classes at time steps `t`
-
-            t (`torch.LongTensor` of shape `(batch_size,)`):
-                Current diffusion steps
-
-        Returns:
-            `torch.FloatTensor` of shape `(batch_size, log probability of class, latent pixel)`:
-                The log probabilities of the latent pixel classes at time step `t-1`.
-        """
-        device = log_p_x_0.device
-        bsz, _, num_latent_pixels  = log_p_x_0.shape
-
-        log_p_x_t_min_1_given_x_t = torch.empty((bsz, self.num_embed, num_latent_pixels), device=device)
-
-        # TODO remove batch loop
-        for batch in range(bsz):
-            t_batch = t[batch]
-
-            x_t_class = x_t[batch, :]
-
-            log_q_x_t_given_x_t_min_1 = self.log_Q_t_known_transitioning_to_class(t=t_batch, klass=x_t_class, device=device, cumulative=False)
-
-            # TODO(will) - maybe just produce directly w/out log probabilities
-            log_q_x_t_min_1_given_x_0 = self.log_Q_t(t=t_batch-1, device=device, cumulative=True)
-            q_x_t_min_1_given_x_0 = log_q_x_t_min_1_given_x_0.exp()
-
-            log_q_x_t_given_x_0 = self.log_Q_t_known_transitioning_to_class(t=t_batch, klass=x_t_class, device=device, cumulative=True)
-
-            # TODO document here
-            # - full matrices
-            # - conversion between logspace and not
-
-            # p(x_0) / q(x_t | x_0)
-            log_step_1 = log_p_x_0[batch, :, :] - log_q_x_t_given_x_0
-            step_1 = log_step_1.exp()
-
-            # q(x_{t-1} | x_0=C_0) * p(x_0=C_0) / q(x_t | x_0=C_0) + ... + q(x_{t-1} | x_0=C_k) * p(x_0=C_k) / q(x_t | x_0=C_k)
-            step_2 = q_x_t_min_1_given_x_0 @ step_1
-            log_step_2 = step_2.log()
-
-            # q(x_t | x_{t-1}) * [q(x_{t-1} | x_0=C_0) * p(x_0=C_0) / q(x_t | x_0=C_0) + ... + q(x_{t-1} | x_0=C_k) * p(x_0=C_k) / q(x_t | x_0=C_k)]
-            log_step_3 = log_q_x_t_given_x_t_min_1 + log_step_2
-            
-            log_p_x_t_min_1_given_x_t[batch, :, :] = log_step_3 
-
-        # TODO remove
-        torch.save(log_p_x_t_min_1_given_x_t, f"/content/diffusers-out/log_p_x_t_min_1_given_x_t-{t_batch}.pt")
-
-        return log_p_x_t_min_1_given_x_t
-
-    def log_Q_t(self, t, device, cumulative: bool):
-        """
-        Returns the log probabilities of the transition matrix (cumulative or non-cumulative).
+        log_qt = self.q_pred(log_x_t, t)                                  # q(xt|x0)
+        # log_qt = torch.cat((log_qt[:,:-1,:], log_zero_vector), dim=1)
+        log_qt = log_qt[:,:-1,:]
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)         # ct~
+        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
+        # ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1)
+        log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
         
-        See equation (7) for the non-cumulative transition matrix.
 
-        Note that we don't have to return a separate transition matrix per latent pixel because 
-        each latent pixel has the same transition matrix.
+        log_qt_one_timestep = self.q_pred_one_timestep(log_x_t, t)        # q(xt|xt_1)
+        log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
+        log_ct = extract(self.log_ct, t, log_x_start.shape)         # ct
+        ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
+        ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
+        log_qt_one_timestep = (~mask)*log_qt_one_timestep + mask*ct_vector
+        
+        # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
+        # q = log_x_start - log_qt
+        q = log_x_start[:,:-1,:] - log_qt
+        q = torch.cat((q, log_zero_vector), dim=1)
+        q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
+        q = q - q_log_sum_exp
+        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
 
-        Args:
-            t (torch.Long):
-                The timestep that determines which transition matrix is used.
+    def log_sample_categorical(self, logits):           # use gumbel to sample onehot vector from log probability
+        uniform = torch.rand_like(logits)
+        gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
+        noised = gumbel_noise + logits
+        sample = noised.argmax(dim=1)
+        log_sample = index_to_log_onehot(sample, self.num_embed)
 
-            device (`torch.device`): 
-                The device to place the returned matrix on.
+        # num_masked = (sample == self.num_embed - 1).count_nonzero()
+        # print()
+        # print("***********")
+        # print()
+        # print(f"num masked {num_masked}")
+        # print()
+        # print("unnoised mask probabilities")
+        # print(logits[0, -1, :].exp())
+        # print()
+        # print("noised mask probabilities")
+        # print(noised[0, -1, :].exp())
+        # print()
+        # print("***********")
+        # print()
 
-            cumulative (`bool`):
-                If cumulative is `False`, the columns are taken from the transition matrix `t-1`->`t`.
-                If cumulative is `True`, the columns are taken from the transition matrix `0`->`t`.
+        return log_sample
 
-        Returns:
-            TODO add fixed dimensions for cumulative
+    def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
+        log_at = extract(self.log_at, t, log_x_t.shape)             # at
+        log_bt = extract(self.log_bt, t, log_x_t.shape)             # bt
+        log_ct = extract(self.log_ct, t, log_x_t.shape)             # ct
+        log_1_min_ct = extract(self.log_1_min_ct, t, log_x_t.shape)          # 1-ct
 
-            `torch.FloatTensor` of shape `(num classes, num classes)`:
-                The log probabilities of the transition matrix (cumulative or non-cumulative).
+        log_probs = torch.cat(
+            [
+                log_add_exp(log_x_t[:,:-1,:]+log_at, log_bt),
+                log_add_exp(log_x_t[:, -1:, :] + log_1_min_ct, log_ct)
+            ],
+            dim=1
+        )
 
-                Where:
-                - C_0 is a class of a latent pixel embedding
-                - C_k is the class of the masked latent pixel
+        return log_probs
 
-                non-cumulative result (omitting logarithms):
-                q(x_t = C_0 | x_{t-1} = C_0) ... q(x_t = C_0 | x_{t-1} = C_k)
-                               .      .                     .
-                               .               .            .
-                               .                      .     .
-                q(x_t = C_k | x_{t-1} = C_0) ... q(x_t = C_k | x_{t-1} = C_k)
+    def q_pred(self, log_x_start, t):           # q(xt|x0)
+        # log_x_start can be onehot or not
+        t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
+        log_cumprod_at = extract(self.log_cumprod_at, t, log_x_start.shape)         # at~
+        log_cumprod_bt = extract(self.log_cumprod_bt, t, log_x_start.shape)         # bt~
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)         # ct~
+        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t, log_x_start.shape)       # 1-ct~
+        
 
-                cumulative result (omitting logarithms):
-                q_cumulative(x_t = C_0 | x_0 = C_0) ... q_cumulative(x_t = C_0 | x_0 = C_k)
-                                   .          .                        .
-                                   .                   .               .
-                                   .                          .        .
-                q_cumulative(x_t = C_k | x_0 = C_0) ... q_cumulative(x_t = C_k | x_0 = C_k)
+        log_probs = torch.cat(
+            [
+                log_add_exp(log_x_start[:,:-1,:]+log_cumprod_at, log_cumprod_bt),
+                log_add_exp(log_x_start[:,-1:,:]+log_1_min_cumprod_ct, log_cumprod_ct)
+            ],
+            dim=1
+        )
 
-        """
-        if cumulative:
-            a = self.log_cumprod_at[t]
-            b = self.log_cumprod_bt[t]
-            c = self.log_cumprod_ct[t]
-
-            shape = (self.num_embed, self.num_embed - 1)
-        else:
-            a = self.log_at[t]
-            b = self.log_bt[t]
-            c = self.log_ct[t]
-
-            shape = (self.num_embed, self.num_embed)
-
-
-        log_Q_t = torch.full(shape, b, device=device)
-        log_Q_t.fill_diagonal_(a + b)
-        log_Q_t[-1, :] = c
-
-        if not cumulative:
-            log_Q_t[:, -1] = self.min_logged_value
-            log_Q_t[-1, -1] = 0 # 0 = log(1)
-
-        return log_Q_t
-
-
-    def log_Q_t_known_transitioning_to_class(self, *, t, klass, device, cumulative: bool):
-        """
-        Returns the log probabilities of the rows from the transition matrix 
-        (cumulative or non-cumulative) for each latent pixel in `klass`.
-
-        See equation (7) for the non-cumulative transition matrix.
-
-        Args:
-            t (torch.Long):
-                The timestep that determines which transition matrix is used.
-
-            klass (`torch.LongTensor` of shape `(num latent pixels)`):
-                The classes of each latent pixel at time `t`.
-
-            device (`torch.device`): 
-                The device to place the returned matrix on.
-
-            cumulative (`bool`):
-                If cumulative is `False`, the columns are taken from the transition matrix `t-1`->`t`.
-                If cumulative is `True`, the columns are taken from the transition matrix `0`->`t`.
-
-        Returns:
-            TODO add fixed dimensions for cumulative
-
-            `torch.FloatTensor` of shape `(num classes, num latent pixels)`:
-                Each _column_ of the returned matrix is a _row_ of log probabilities of the probability 
-                transition matrix.
-                
-                Where:
-                - `q_n` is the probability distribution for the forward process of the `n`th latent pixel.
-                - C_0 is a class of a latent pixel embedding
-                - C_k is the class of the masked latent pixel
-
-                non-cumulative result (omitting logarithms):
-                q_0(x_t | x_{t-1} = C_0) ... q_n(x_t | x_{t-1} = C_0)
-                          .      .                     .
-                          .               .            .
-                          .                      .     .
-                q_0(x_t | x_{t-1} = C_k) ... q_n(x_t | x_{t-1} = C_k)
+        return log_probs
 
 
-                cumulative result (omitting logarithms):
-                q_0_cumulative(x_t | x_0 = C_0) ... q_n_cumulative(x_t | x_0 = C_0)
-                          .               .                          .
-                          .                        .                 .
-                          .                               .          .
-                q_0_cumulative(x_t | x_0 = C_k) ... q_n_cumulative(x_t | x_0 = C_k)
-        """
-        num_latent_pixels = klass.shape[0]
+def extract(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
-        if cumulative:
-            a = self.log_cumprod_at[t]
-            b = self.log_cumprod_bt[t]
-            c = self.log_cumprod_ct[t]
+def log_onehot_to_index(log_x):
+    return log_x.argmax(1)
 
-            shape = (self.num_embed - 1, num_latent_pixels)
-        else:
-            a = self.log_at[t]
-            b = self.log_bt[t]
-            c = self.log_ct[t]
+def log_add_exp(a, b):
+    maximum = torch.max(a, b)
+    return maximum + torch.log(torch.exp(a - maximum) + torch.exp(b - maximum))
 
-            shape = (self.num_embed, num_latent_pixels)
+def log_1_min_a(a):
+    return torch.log(1 - a.exp() + 1e-40)
 
-        log_Q_t = torch.empty(shape, device=device)
-
-        # Transitioning to masked latent pixels
-
-        mask_class_mask = klass == self.mask_class
-
-        log_Q_t[:, mask_class_mask] = c
-
-        if not cumulative:
-            log_Q_t[-1, mask_class_mask] = 0 # 0 == log(1)
-
-
-        # Transitioning to non-masked latent pixels
-
-        non_mask_class_mask = ~mask_class_mask
-
-        log_Q_t[:, non_mask_class_mask] = b
-        log_Q_t[klass[non_mask_class_mask], non_mask_class_mask] = a + b
-
-        if not cumulative:
-            log_Q_t[-1, non_mask_class_mask] = self.min_logged_value
-
-        return log_Q_t
+def index_to_log_onehot(x, num_classes):
+    assert x.max().item() < num_classes, \
+        f'Error: {x.max().item()} >= {num_classes}'
+    x_onehot = F.one_hot(x, num_classes)
+    permute_order = (0, -1) + tuple(range(1, len(x.size())))
+    x_onehot = x_onehot.permute(permute_order)
+    log_x = torch.log(x_onehot.float().clamp(min=1e-30))
+    return log_x
