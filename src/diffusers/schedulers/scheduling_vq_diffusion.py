@@ -156,11 +156,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
 
+        # TODO HERE
         q = q - q_log_sum_exp
 
         q = self.xqpred(q, t - 1)
 
         log_p_x_t_min_1 = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
+
+        import pdb; pdb.set_trace()
 
         return log_p_x_t_min_1
 
