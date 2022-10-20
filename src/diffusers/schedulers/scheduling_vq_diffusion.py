@@ -78,14 +78,15 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_1_min_ct = log_1_min_a(log_ct)
         log_1_min_cumprod_ct = log_1_min_a(log_cumprod_ct)
 
-        self.log_at = log_at.float()
-        self.log_bt = log_bt.float()
-        self.log_ct = log_ct.float()
-        self.log_cumprod_at = log_cumprod_at.float()
-        self.log_cumprod_bt = log_cumprod_bt.float()
-        self.log_cumprod_ct = log_cumprod_ct.float()
-        self.log_1_min_ct = log_1_min_ct.float()
-        self.log_1_min_cumprod_ct = log_1_min_cumprod_ct.float()
+        # TODO remove the `to('cuda')`s
+        self.log_at = log_at.float().to('cuda')
+        self.log_bt = log_bt.float().to('cuda')
+        self.log_ct = log_ct.float().to('cuda')
+        self.log_cumprod_at = log_cumprod_at.float().to('cuda')
+        self.log_cumprod_bt = log_cumprod_bt.float().to('cuda')
+        self.log_cumprod_ct = log_cumprod_ct.float().to('cuda')
+        self.log_1_min_ct = log_1_min_ct.float().to('cuda')
+        self.log_1_min_cumprod_ct = log_1_min_cumprod_ct.float().to('cuda')
 
         # setable values
         self.num_inference_steps = None
