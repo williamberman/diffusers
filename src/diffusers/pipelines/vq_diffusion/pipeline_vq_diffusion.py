@@ -141,22 +141,14 @@ class VQDiffusionPipeline(DiffusionPipeline):
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # predict the un-noised image
             log_p_x_0 = self.transformer(latent_images=x_t, cond_emb=text_embeddings, t=t)
-            xlog_p_x_0 = log_p_x_0
 
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
 
             # remove `log(0)`'s (`-inf`s)
             log_p_x_0 = log_p_x_0.clamp(-70)
-            xlog_p_x_0 = self.truncate_old(xlog_p_x_0.clamp(-70), truncation_rate)
 
-            assert (log_p_x_0 == xlog_p_x_0).all()
-
-
-            if t == 0:
-                x_t = log_p_x_0.argmax(dim=1)
-            else:
-                # compute the previous noisy sample x_t -> x_t-1
-                x_t = self.scheduler.step(log_p_x_0, x_t, t).x_t_min_1
+            # compute the previous noisy sample x_t -> x_t-1
+            x_t = self.scheduler.step(log_p_x_0, x_t, t).x_t_min_1
 
             # call the callback, if provided
             if callback is not None and i % callback_steps == 0:
@@ -200,16 +192,3 @@ class VQDiffusionPipeline(DiffusionPipeline):
         rv[~keep_mask] = -torch.inf # -inf = log(0)
 
         return rv
-
-    def truncate_old(self, log_p_x_0: torch.FloatTensor,  truncation_rate: float):
-        temp, indices = torch.sort(log_p_x_0, 1, descending=True)
-        temp1 = torch.exp(temp)
-        temp2 = temp1.cumsum(dim=1)
-        temp3 = temp2 < truncation_rate
-        new_temp = torch.full_like(temp3[:,0:1,:], True)
-        temp6 = torch.cat((new_temp, temp3), dim=1)
-        temp3 = temp6[:,:-1,:]
-        temp4 = temp3.gather(1, indices.argsort(1))
-        temp5 = temp4.float()*log_p_x_0+(1-temp4.float())*(-70)
-        probs = temp5
-        return probs

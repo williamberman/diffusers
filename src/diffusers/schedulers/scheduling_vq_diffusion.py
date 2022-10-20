@@ -118,7 +118,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         t,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
-        log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
+        if t == 0:
+            log_p_x_t_min_1 = log_p_x_0
+        else:
+            log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
 
         log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
 
