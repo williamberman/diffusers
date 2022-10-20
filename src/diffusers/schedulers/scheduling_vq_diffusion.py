@@ -136,7 +136,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
     def q_posterior(self, log_x_start, x_t, t):
-        log_q_x_t_given_x_0 = self.log_Q_t_cumulative_transitioning_to_known_class(t=t[0], klass=x_t)
+        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, cumulative=True)
 
         log_qt_one_timestep = self.step_2(x_t, t)
 
@@ -158,7 +158,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     # TODO HERE
     def step_2(self, x_t, t):
         orig = self.step_2_orig(x_t, t)
-        new = self.step_2_new(t=t[0], klass=x_t)
+        new = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, cumulative=False)
         assert (orig == new).all()
         return new
 
@@ -180,7 +180,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return log_qt_one_timestep
 
-    def step_2_new(self, *, t, klass):
+    def log_Q_t_transitioning_to_known_class(self, *, t, klass):
         a = self.log_at[t]
         b = self.log_bt[t]
         c = self.log_ct[t]
@@ -203,12 +203,13 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return log_Q_t
 
 
-    def log_Q_t_cumulative_transitioning_to_known_class(self, *, t, klass):
+    def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, cumulative: bool):
         """
-        Returns the log probabilities of the rows from the cumulative transition matrix 
+        Returns the log probabilities of the rows from the (cumulative or non-cumulative) transition matrix 
         for each latent pixel in `klass`.
 
-        See equation (7) for the non-cumulative transition matrix.
+        See equation (7) for the complete non-cumulative transition matrix. The complete cumulative transition
+        matrix is the same structure except the parameters (alpha, beta, gamma) are the cumulative analogs.
 
         Args:
             t (torch.Long):
@@ -217,32 +218,51 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             klass (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
                 The classes of each latent pixel at time `t`.
 
+            cumulative (`bool`):
+                If cumulative is `False`, the columns are taken from the transition matrix `t-1`->`t`.
+                If cumulative is `True`, the columns are taken from the transition matrix `0`->`t`.
+
         Returns:
             `torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`:
-                Each _row_ of the returned matrix is a _row_ of log probabilities of the probability 
-                transition matrix.
+                Each _row_ of the returned matrix is a _row_ of log probabilities of the complete
+                probability transition matrix.
 
-                Returns `self.num_classes - 1` rows because the initial latent pixel cannot be masked
+                When non cumulative, returns `self.num_classes - 1` rows because the initial latent 
+                pixel cannot be masked
                 
                 Where:
                 - `q_n` is the probability distribution for the forward process of the `n`th latent pixel.
                 - C_0 is a class of a latent pixel embedding
                 - C_k is the class of the masked latent pixel
 
-                result (omitting logarithms):
+                non-cumulative result (omitting logarithms):
+                q_0(x_t | x_{t-1} = C_0) ... q_n(x_t | x_{t-1} = C_0)
+                          .      .                     .
+                          .               .            .
+                          .                      .     .
+                q_0(x_t | x_{t-1} = C_k) ... q_n(x_t | x_{t-1} = C_k)
+
+                cumulative result (omitting logarithms):
                 q_0_cumulative(x_t | x_0 = C_0) ... q_n_cumulative(x_t | x_0 = C_0)
                           .               .                          .
                           .                        .                 .
                           .                               .          .
-                q_0_cumulative(x_t | x_0 = C_k) ... q_n_cumulative(x_t | x_0 = C_k)
+                q_0_cumulative(x_t | x_0 = C_{k-1}) ... q_n_cumulative(x_t | x_0 = C_{k-1})
         """
-        a = self.log_cumprod_at[t]
-        b = self.log_cumprod_bt[t]
-        c = self.log_cumprod_ct[t]
-
-        # TODO we'll probably pass klass in
+        if cumulative:
+            a = self.log_cumprod_at[t]
+            b = self.log_cumprod_bt[t]
+            c = self.log_cumprod_ct[t]
+        else:
+            a = self.log_at[t]
+            b = self.log_bt[t]
+            c = self.log_ct[t]
 
         klass_log_onehot = xindex_to_log_onehot(klass, self.num_embed)
+
+        if not cumulative:
+            # TODO document this
+            klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :].unsqueeze(0)
 
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
         # so the default one hot matrix has one too many rows. See the doc string
@@ -266,6 +286,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         mask_class_mask = klass == self.mask_class
         mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
         log_Q_t[mask_class_mask] = c
+
+        if not cumulative:
+            log_Q_t = torch.cat((log_Q_t, klass_log_onehot_transitioning_from_masked), dim=1)
 
         return log_Q_t
 
