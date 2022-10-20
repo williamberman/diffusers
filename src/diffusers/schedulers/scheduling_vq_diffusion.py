@@ -262,24 +262,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return log_Q_t
 
-
-
-    def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
-        log_at = extract(self.log_at, t)             # at
-        log_bt = extract(self.log_bt, t)             # bt
-        log_ct = extract(self.log_ct, t)             # ct
-        log_1_min_ct = extract(self.log_1_min_ct, t)          # 1-ct
-
-        log_probs = torch.cat(
-            [
-                log_add_exp(log_x_t[:,:-1,:]+log_at, log_bt),
-                log_add_exp(log_x_t[:, -1:, :] + log_1_min_ct, log_ct)
-            ],
-            dim=1
-        )
-
-        return log_probs
-
     def q_pred(self, log_x_start, t):           # q(xt|x0)
         # log_x_start can be onehot or not
         # t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
