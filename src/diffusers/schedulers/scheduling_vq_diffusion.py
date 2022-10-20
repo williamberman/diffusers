@@ -143,7 +143,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         ########################
 
         bsz, content_seq_len = x_t.shape
-        log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float)
+        log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float, device=log_x_start.device)
         log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
         
         # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
