@@ -66,7 +66,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
         self,
         prompt: Union[str, List[str]],
         *,
-        truncation_rate: float,
+        truncation_rate: float = 1.0,
         num_inference_steps: int = 100,
         num_images_per_prompt: int = 1, # TODO not working
         generator: Optional[torch.Generator] = None,
