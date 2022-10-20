@@ -174,15 +174,18 @@ class VQDiffusionPipeline(DiffusionPipeline):
         return VQDiffusionPipelineOutput(images=image)
 
     # TODO(will) - make good
-    def truncate(self, log_p_x_0: torch.FloatTensor,  truncation_rate: float):
-        temp, indices = torch.sort(log_p_x_0, 1, descending=True)
-        temp1 = torch.exp(temp)
-        temp2 = temp1.cumsum(dim=1)
-        temp3 = temp2 < truncation_rate
-        new_temp = torch.full_like(temp3[:,0:1,:], True)
-        temp6 = torch.cat((new_temp, temp3), dim=1)
-        temp3 = temp6[:,:-1,:]
-        temp4 = temp3.gather(1, indices.argsort(1))
-        temp5 = temp4.float()*log_p_x_0+(1-temp4.float())*(-70)
-        probs = temp5
-        return probs
+    def truncate(self, log_p_x_0: torch.FloatTensor,  truncation_rate: float) -> torch.FloatTensor:
+        sorted_log_p_x_0, indices = torch.sort(log_p_x_0, 1, descending=True)
+        sorted_p_x_0 = torch.exp(sorted_log_p_x_0)
+        to_truncate = sorted_p_x_0.cumsum(dim=1) < truncation_rate
+
+        import pdb; pdb.set_trace()
+
+        new_temp = torch.full_like(to_truncate[:,0:1,:], True)
+        temp6 = torch.cat((new_temp, to_truncate), dim=1)
+        to_truncate = temp6[:,:-1,:]
+        temp4 = to_truncate.gather(1, indices.argsort(1))
+
+        truncated_log_p_x_0 = temp4.float()*log_p_x_0+(1-temp4.float())*(-70)
+
+        return truncated_log_p_x_0
