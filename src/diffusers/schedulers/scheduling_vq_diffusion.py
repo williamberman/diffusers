@@ -176,6 +176,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_qt = log_qt[:,:-1,:]
         log_cumprod_ct = extract(self.log_cumprod_ct, t)         # ct~
         ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
+        import pdb; pdb.set_Trace()
         log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
 
         return log_qt
