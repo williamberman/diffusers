@@ -138,9 +138,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
         x_t = latents
 
-        # TODO add back progress bar
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
-        # for i, t in enumerate(timesteps_tensor):
             t = t.repeat(batch_size)
 
             # predict the un-noised image
