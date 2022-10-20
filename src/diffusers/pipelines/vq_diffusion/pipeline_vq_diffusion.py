@@ -158,7 +158,8 @@ class VQDiffusionPipeline(DiffusionPipeline):
                 callback(i, t, x_t)
 
         embedding_channels = self.vqvae.quantize.e_dim
-        embeddings = self.vqvae.quantize.get_codebook_entry(x_t, shape=(batch_size, self.transformer.height, self.transformer.width, embedding_channels))
+        embeddings_shape = (batch_size, self.transformer.height, self.transformer.width, embedding_channels)
+        embeddings = self.vqvae.quantize.get_codebook_entry(x_t, shape=embeddings_shape)
         image = self.vqvae.decode(embeddings, force_not_quantize=True).sample
 
         image = (image / 2 + 0.5).clamp(0, 1)
