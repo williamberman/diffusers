@@ -119,11 +119,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         t,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
-        # add the zero vector to log_p_x_0
-        bsz, _, num_latent_pixels = log_p_x_0.shape
-        log_zero_vector = torch.full((bsz, 1, num_latent_pixels), self.min_logged_value, device=log_p_x_0.device)
-        log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
-
         log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
 
         log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
@@ -135,7 +130,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
-    def q_posterior(self, log_x_start, x_t, t):
+    def q_posterior(self, log_p_x_0, x_t, t):
         class_log_onehot = xindex_to_log_onehot(x_t, self.num_embed)
 
         log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
@@ -145,12 +140,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         ########################
 
         bsz, content_seq_len = x_t.shape
-        log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float, device=log_x_start.device)
+        log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float, device=log_p_x_0.device)
         log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
         
         # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
         # q = log_x_start - log_qt
-        q = log_x_start[:,:-1,:] - log_q_x_t_given_x_0
+        q = log_p_x_0 - log_q_x_t_given_x_0
         q = torch.cat((q, log_zero_vector), dim=1)
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
         q = q - q_log_sum_exp
@@ -217,7 +212,16 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             c = self.log_ct[t]
 
         if not cumulative:
-            # TODO document this
+            # The values in the onehot vector can also be used as the logprobs for transitioning
+            # from masked latent pixels. If we are not calculating the cumulative transitions,
+            # we need to save these vectors to be re-appended to the final matrix so the values
+            # aren't overwritten.
+            #
+            # `P(x_t!=mask|x_{t-1=mask}) = 0` and 0 will be the value of the last row of the onehot vector
+            # if x_t is not masked
+            #
+            # `P(x_t=mask|x_{t-1=mask}) = 1` and 1 will be the value of the last row of the onehot vector
+            # if x_t is masked
             class_log_onehot_transitioning_from_masked = class_log_onehot[:, -1, :].unsqueeze(0)
 
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
@@ -225,7 +229,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # for an explanation of the dimensionality of the returned matrix.
         class_log_onehot = class_log_onehot[:, :-1, :]
 
-        # this is a cheeky trick using the log one-hot vectors.
+        # this is a cheeky trick to produce the transition probabilities using log one-hot vectors.
         #
         # Don't worry about what values this sets in the columns that mark transitions
         # to masked latent pixels. They are overwrote later with the `mask_class_mask`.
