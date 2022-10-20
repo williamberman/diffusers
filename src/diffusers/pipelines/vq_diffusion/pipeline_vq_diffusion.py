@@ -139,8 +139,6 @@ class VQDiffusionPipeline(DiffusionPipeline):
         x_t = latents
 
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
-            t = t.repeat(batch_size)
-
             # predict the un-noised image
             log_p_x_0 = self.transformer(latent_images=x_t, cond_emb=text_embeddings, t=t)
 
@@ -148,9 +146,6 @@ class VQDiffusionPipeline(DiffusionPipeline):
             log_p_x_0 = log_p_x_0.clamp(-70)
 
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
-
-            # TODO - do not repeat t initially
-            t = t[0]
 
             if t == 0:
                 x_t = log_p_x_0.argmax(dim=1)

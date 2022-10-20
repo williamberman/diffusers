@@ -170,18 +170,6 @@ class AdaLayerNorm(nn.Module):
         self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False)
 
     def forward(self, x, timestep):
-        old = self.old(x, timestep)
-        new = self.new(x, timestep[0])
-        assert (new == old).all()
-        return new
-
-    def old(self, x, timestep):
-        emb = self.linear(self.silu(self.emb(timestep))).unsqueeze(1)
-        scale, shift = torch.chunk(emb, 2, dim=2)
-        x = self.norm(x) * (1 + scale) + shift
-        return x
-
-    def new(self, x, timestep):
         emb = self.linear(self.silu(self.emb(timestep)))
         scale, shift = torch.chunk(emb, 2)
         x = self.norm(x) * (1 + scale) + shift
