@@ -9,9 +9,11 @@ from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from .scheduling_utils import SchedulerMixin
 
-@dataclass
-class VQDiffusionSchedulerOutput(BaseOutput):
-    x_t_min_1: torch.LongTensor
+def gumbel_noised(logits):
+    uniform = torch.rand_like(logits, device=logits.device)
+    gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
+    noised = gumbel_noise + logits
+    return noised
 
 def alpha_schedules(num_diffusion_timesteps, att_1 = 0.99999, att_T = 0.000009):
     att = np.arange(0, num_diffusion_timesteps)/(num_diffusion_timesteps-1)*(att_T - att_1) + att_1
@@ -29,6 +31,10 @@ def gamma_schedules(time_step, ctt_1 = 0.000009, ctt_T = 0.99999):
     ct = 1-one_minus_ct
     ctt = np.concatenate((ctt[1:], [0]))
     return ct, ctt
+
+@dataclass
+class VQDiffusionSchedulerOutput(BaseOutput):
+    x_t_min_1: torch.LongTensor
 
 class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     """
@@ -121,8 +127,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # convert x_t into log_probs
         log_x_t = index_to_log_onehot(x_t, self.num_embed)
 
-        model_log_prob = self.q_posterior(log_p_x_0, log_x_t, t)
-        x_t_min_1 = self.log_sample_categorical(model_log_prob)
+        log_p_x_t_min_1 = self.q_posterior(log_p_x_0, log_x_t, t)
+        log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
+        x_t_min_1 = log_p_x_t_min_1.argmax(dim=1)
 
         if not return_dict:
             return (x_t_min_1,)
@@ -164,12 +171,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = q - q_log_sum_exp
         log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
-
-    def log_sample_categorical(self, logits):           # use gumbel to sample onehot vector from log probability
-        uniform = torch.rand_like(logits)
-        gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
-        noised = gumbel_noise + logits
-        return noised.argmax(dim=1)
 
     def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
         log_at = extract(self.log_at, t, log_x_t.shape)             # at
