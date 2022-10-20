@@ -156,11 +156,49 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         q = q - q_log_sum_exp
 
-        q = torch.cat((q, log_zero_vector), dim=1)
+        new_q = self.xqpred(q, t)
 
-        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_q_t_given_x_t_min_1 + q_log_sum_exp
+        q = torch.cat((q, log_zero_vector), dim=1)
+        q = self.q_pred(q, t-1)
+
+        import pdb; pdb.set_trace()
+
+        log_EV_xtmin_given_xt_given_xstart = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
 
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
+
+    def xqpred(self, q, t):
+        a = self.log_cumprod_at[t]
+        b = self.log_cumprod_bt[t]
+        c = self.log_cumprod_ct[t]
+
+        num_latent_pixels = q.shape[1]
+        c = c.expand(1, 1, num_latent_pixels)
+
+        q = (q + a).logaddexp(b)
+        q = torch.cat((q, c), dim=1)
+
+        return q
+        
+
+    def q_pred(self, log_x_start, t):           # q(xt|x0)
+        # log_x_start can be onehot or not
+        # t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
+        log_cumprod_at = extract(self.log_cumprod_at, t)         # at~
+        log_cumprod_bt = extract(self.log_cumprod_bt, t)         # bt~
+        log_cumprod_ct = extract(self.log_cumprod_ct, t)         # ct~
+        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t)       # 1-ct~
+        
+
+        log_probs = torch.cat(
+            [
+                log_add_exp(log_x_start[:,:-1,:]+log_cumprod_at, log_cumprod_bt),
+                log_add_exp(log_x_start[:,-1:,:]+log_1_min_cumprod_ct, log_cumprod_ct)
+            ],
+            dim=1
+        )
+
+        return log_probs
 
 
     def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
@@ -261,25 +299,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             log_Q_t = torch.cat((log_Q_t, class_log_onehot_transitioning_from_masked), dim=1)
 
         return log_Q_t
-
-    def q_pred(self, log_x_start, t):           # q(xt|x0)
-        # log_x_start can be onehot or not
-        # t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
-        log_cumprod_at = extract(self.log_cumprod_at, t)         # at~
-        log_cumprod_bt = extract(self.log_cumprod_bt, t)         # bt~
-        log_cumprod_ct = extract(self.log_cumprod_ct, t)         # ct~
-        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t)       # 1-ct~
-        
-
-        log_probs = torch.cat(
-            [
-                log_add_exp(log_x_start[:,:-1,:]+log_cumprod_at, log_cumprod_bt),
-                log_add_exp(log_x_start[:,-1:,:]+log_1_min_cumprod_ct, log_cumprod_ct)
-            ],
-            dim=1
-        )
-
-        return log_probs
 
 
 def extract(a, t):
