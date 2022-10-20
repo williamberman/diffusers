@@ -189,7 +189,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :]
 
-        klass_log_onehot = log_Q_t[:, :-1, :]
+        klass_log_onehot = klass_log_onehot[:, :-1, :]
 
         log_Q_t = (klass_log_onehot + a).logaddexp(b)
 
@@ -247,7 +247,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
         # so the default one hot matrix has one too many rows. See the doc string
         # for an explanation of the dimensionality of the returned matrix.
-        klass_log_onehot = log_Q_t[:, :-1, :]
+        klass_log_onehot = klass_log_onehot[:, :-1, :]
 
         # this is a cheeky trick using the log one-hot vectors.
         #
