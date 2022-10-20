@@ -85,13 +85,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_cumprod_bt = torch.log(btt)
         log_cumprod_ct = torch.log(ctt)
 
-        # TODO remove the `to('cuda')`s and have these switch devices along with the pipeline
-        self.log_at = log_at.float().to('cuda')
-        self.log_bt = log_bt.float().to('cuda')
-        self.log_ct = log_ct.float().to('cuda')
-        self.log_cumprod_at = log_cumprod_at.float().to('cuda')
-        self.log_cumprod_bt = log_cumprod_bt.float().to('cuda')
-        self.log_cumprod_ct = log_cumprod_ct.float().to('cuda')
+        self.log_at = log_at.float()
+        self.log_bt = log_bt.float()
+        self.log_ct = log_ct.float()
+        self.log_cumprod_at = log_cumprod_at.float()
+        self.log_cumprod_bt = log_cumprod_bt.float()
+        self.log_cumprod_ct = log_cumprod_ct.float()
 
         # setable values
         self.num_inference_steps = None
