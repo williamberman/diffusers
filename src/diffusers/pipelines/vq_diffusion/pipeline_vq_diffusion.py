@@ -143,12 +143,12 @@ class VQDiffusionPipeline(DiffusionPipeline):
             log_p_x_0 = self.transformer(latent_images=x_t, cond_emb=text_embeddings, t=t)
 
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
+            # remove `-inf`s
             log_p_x_0 = log_p_x_0.clamp(-70)
             xlog_p_x_0 = self.truncate_old(log_p_x_0.clamp(-70), truncation_rate)
 
-            import pdb; pdb.set_trace()
+            assert (log_p_x_0 == xlog_p_x_0).all()
 
-            # remove `-inf`s
 
             if t == 0:
                 x_t = log_p_x_0.argmax(dim=1)
