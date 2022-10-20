@@ -68,7 +68,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
         *,
         truncation_rate: float,
         num_inference_steps: int = 100,
-        num_images_per_prompt: int = 1,
+        num_images_per_prompt: int = 1, # TODO not working
         generator: Optional[torch.Generator] = None,
         latents: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
@@ -142,10 +142,13 @@ class VQDiffusionPipeline(DiffusionPipeline):
             # predict the un-noised image
             log_p_x_0 = self.transformer(latent_images=x_t, cond_emb=text_embeddings, t=t)
 
+            log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
+            xlog_p_x_0 = self.truncate_old(log_p_x_0, truncation_rate)
+
+            import pdb; pdb.set_trace()
+
             # remove `-inf`s
             log_p_x_0 = log_p_x_0.clamp(-70)
-
-            log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
 
             if t == 0:
                 x_t = log_p_x_0.argmax(dim=1)
@@ -173,19 +176,38 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
         return VQDiffusionPipelineOutput(images=image)
 
-    # TODO(will) - make good
     def truncate(self, log_p_x_0: torch.FloatTensor,  truncation_rate: float) -> torch.FloatTensor:
+        """
+        Truncates log_p_x_0 such that for each column vector, the total cumulative probability is `truncation_rate`
+        The lowest probabilities that would increase the cumulative probability above `truncation_rate` are set 
+        to zero.
+        """
         sorted_log_p_x_0, indices = torch.sort(log_p_x_0, 1, descending=True)
         sorted_p_x_0 = torch.exp(sorted_log_p_x_0)
-        to_truncate = sorted_p_x_0.cumsum(dim=1) < truncation_rate
+        keep_mask = sorted_p_x_0.cumsum(dim=1) < truncation_rate
 
-        import pdb; pdb.set_trace()
+        # Ensure that at least the largest probability is not zeroed out
+        all_true = torch.full_like(keep_mask[:,0:1,:], True)
+        keep_mask = torch.cat((all_true, keep_mask), dim=1)
+        keep_mask = keep_mask[:,:-1,:]
 
-        new_temp = torch.full_like(to_truncate[:,0:1,:], True)
-        temp6 = torch.cat((new_temp, to_truncate), dim=1)
-        to_truncate = temp6[:,:-1,:]
-        temp4 = to_truncate.gather(1, indices.argsort(1))
+        keep_mask = keep_mask.gather(1, indices.argsort(1))
 
-        truncated_log_p_x_0 = temp4.float()*log_p_x_0+(1-temp4.float())*(-70)
+        rv = log_p_x_0.clone()
 
-        return truncated_log_p_x_0
+        rv[~keep_mask] = -torch.inf
+
+        return rv
+
+    def truncate_old(self, log_p_x_0: torch.FloatTensor,  truncation_rate: float):
+        temp, indices = torch.sort(log_p_x_0, 1, descending=True)
+        temp1 = torch.exp(temp)
+        temp2 = temp1.cumsum(dim=1)
+        temp3 = temp2 < truncation_rate
+        new_temp = torch.full_like(temp3[:,0:1,:], True)
+        temp6 = torch.cat((new_temp, temp3), dim=1)
+        temp3 = temp6[:,:-1,:]
+        temp4 = temp3.gather(1, indices.argsort(1))
+        temp5 = temp4.float()*log_p_x_0+(1-temp4.float())*(-70)
+        probs = temp5
+        return probs
