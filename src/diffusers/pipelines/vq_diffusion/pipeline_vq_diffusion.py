@@ -151,8 +151,12 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
 
-            # compute the previous noisy sample x_t -> x_t-1
-            x_t = self.scheduler.step(log_p_x_0, x_t, t).x_t_min_1
+            # TODO - do this better
+            if t[0] == 0:
+                x_t = log_p_x_0.argmax(dim=1)
+            else:
+                # compute the previous noisy sample x_t -> x_t-1
+                x_t = self.scheduler.step(log_p_x_0, x_t, t).x_t_min_1
 
             # call the callback, if provided
             if callback is not None and i % callback_steps == 0:
