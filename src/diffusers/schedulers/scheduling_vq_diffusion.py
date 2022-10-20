@@ -122,9 +122,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_x_t = index_to_log_onehot(x_t, self.num_embed)
 
         model_log_prob = self.q_posterior(log_p_x_0, log_x_t, t)
-        out = self.log_sample_categorical(model_log_prob)
-
-        x_t_min_1 = out.argmax(dim=1)
+        x_t_min_1 = self.log_sample_categorical(model_log_prob)
 
         if not return_dict:
             return (x_t_min_1,)
@@ -171,25 +169,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         uniform = torch.rand_like(logits)
         gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
         noised = gumbel_noise + logits
-        sample = noised.argmax(dim=1)
-        log_sample = index_to_log_onehot(sample, self.num_embed)
-
-        # num_masked = (sample == self.num_embed - 1).count_nonzero()
-        # print()
-        # print("***********")
-        # print()
-        # print(f"num masked {num_masked}")
-        # print()
-        # print("unnoised mask probabilities")
-        # print(logits[0, -1, :].exp())
-        # print()
-        # print("noised mask probabilities")
-        # print(noised[0, -1, :].exp())
-        # print()
-        # print("***********")
-        # print()
-
-        return log_sample
+        return noised.argmax(dim=1)
 
     def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
         log_at = extract(self.log_at, t, log_x_t.shape)             # at
