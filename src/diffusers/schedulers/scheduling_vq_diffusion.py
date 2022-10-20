@@ -170,7 +170,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     def step_1(self, x_t, t):
         orig = self.step_1_orig(x_t, t)
         new = self.step_1_new(x_t, t)
-        import pdb; pdb.set_trace()
         assert (orig == new).all()
         return new
 
