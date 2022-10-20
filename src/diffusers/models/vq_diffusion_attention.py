@@ -172,8 +172,8 @@ class AdaLayerNorm(nn.Module):
     def forward(self, x, timestep):
         old = self.old(x, timestep)
         new = self.new(x, timestep[0])
-        import pdb; pdb.set_trace()
-        return old
+        assert (new == old).all()
+        return new
 
     def old(self, x, timestep):
         emb = self.linear(self.silu(self.emb(timestep))).unsqueeze(1)
