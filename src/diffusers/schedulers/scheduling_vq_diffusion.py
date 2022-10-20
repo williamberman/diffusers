@@ -138,7 +138,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     def q_posterior(self, log_x_start, x_t, t):
         class_log_onehot = xindex_to_log_onehot(x_t, self.num_embed)
 
-        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t class_log_onehot=class_log_onehot, cumulative=True)
+        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
 
         log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, class_log_onehot=class_log_onehot, cumulative=False)
 
