@@ -146,6 +146,9 @@ class VQDiffusionPipeline(DiffusionPipeline):
             # predict the un-noised image
             log_p_x_0 = self.transformer(latent_images=x_t, cond_emb=text_embeddings, t=t)
 
+            # remove `-inf`s
+            log_p_x_0 = log_p_x_0.clamp(-70)
+
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
 
             # TODO - do not repeat t initially

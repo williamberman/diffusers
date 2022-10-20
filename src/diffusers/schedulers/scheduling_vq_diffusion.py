@@ -58,10 +58,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # number of classes, including the mask
         num_embed: int,
         num_train_timesteps: int = 100,
-        min_logged_value: float = -70.0,
     ):
         self.num_embed = num_embed
-        self.min_logged_value = min_logged_value
 
         # By convention, the index for the mask class is the last class index
         self.mask_class = self.num_embed - 1

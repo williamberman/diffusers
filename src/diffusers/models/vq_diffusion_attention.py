@@ -23,14 +23,12 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         width: int,
         diffusion_steps: int,
         dropout: float = 0.0,
-        min_logged_value: float = -70.0
     ):
         super().__init__()
 
         self.n_heads = n_heads
         self.d_head = d_head
         self.inner_dim = n_heads * d_head
-        self.min_logged_value = min_logged_value
         self.num_embed = num_embed
         self.height = height
         self.width = width
@@ -64,8 +62,6 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         self.out = nn.Linear(self.inner_dim, self.num_embed - 1)
 
     def forward(self, latent_images, cond_emb, t):
-        # bsz = latent_images.shape[0]
-
         embedded_latent_images = self.latent_image_embedding(latent_images)
         hidden_states = embedded_latent_images
 
@@ -76,14 +72,7 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         # (batch, self.num_embed - 1, self.num_latent_pixels)
         logits = logits.permute(0, 2, 1)
 
-        # TODO document why we append the zero vector
-        # equivalent to `torch.zeros((bsz, 1, self.num_latent_pixels)).log().clamp(self.min_logged_value)`
-        # log_zero_vector = torch.full((bsz, 1, self.num_latent_pixels), self.min_logged_value, device=logits.device)
-
-        log_p_x_0 = F.log_softmax(logits.double(), dim=1).float().clamp(self.min_logged_value)
-
-        # (batch, self.num_embed, self.inner_dim)
-        # log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
+        log_p_x_0 = F.log_softmax(logits.double(), dim=1).float()
 
         return log_p_x_0
 
