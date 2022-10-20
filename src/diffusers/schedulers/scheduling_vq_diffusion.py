@@ -133,7 +133,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     def q_posterior(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
         # notice that log_x_t is onehot
         # assert t.min().item() >= 0 and t.max().item() < self.num_timesteps
-        _, _, content_seq_len = log_x_t
+        _, _, content_seq_len = log_x_t.shape
 
         batch_size = log_x_start.size()[0]
         onehot_x_t = log_onehot_to_index(log_x_t)
