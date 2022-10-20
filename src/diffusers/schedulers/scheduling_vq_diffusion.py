@@ -140,10 +140,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # assert t.min().item() >= 0 and t.max().item() < self.num_timesteps
         bsz, content_seq_len = x_t.shape
 
-        # step 1
-        log_qt = self.step_1(x_t, t)
+        log_q_x_t_given_x_0 = self.log_Q_t_cumulative_transitioning_to_known_class(t=t[0], klass=x_t)
 
-        # step 2
+        ########################
 
         mask = (x_t == self.mask_class).unsqueeze(1) 
         log_x_t = index_to_log_onehot(x_t, self.num_embed)
@@ -160,31 +159,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         
         # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
         # q = log_x_start - log_qt
-        q = log_x_start[:,:-1,:] - log_qt
+        q = log_x_start[:,:-1,:] - log_q_x_t_given_x_0
         q = torch.cat((q, log_zero_vector), dim=1)
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
         q = q - q_log_sum_exp
         log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
-
-    def step_1(self, x_t, t):
-        orig = self.step_1_orig(x_t, t)
-        new = self.log_Q_t_cumulative_transitioning_to_known_class(t=t[0], klass=x_t)
-        assert (orig == new).all()
-        return new
-
-    def step_1_orig(self, x_t, t):
-        mask = (x_t == self.mask_class).unsqueeze(1) 
-
-        log_x_t = index_to_log_onehot(x_t, self.num_embed)
-
-        log_qt = self.q_pred(log_x_t, t)                                  # q(xt|x0)
-        log_qt = log_qt[:,:-1,:]
-        log_cumprod_ct = extract(self.log_cumprod_ct, t)         # ct~
-        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
-        log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
-
-        return log_qt
 
     def log_Q_t_cumulative_transitioning_to_known_class(self, *, t, klass):
         """
