@@ -124,11 +124,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_zero_vector = torch.full((bsz, 1, num_latent_pixels), self.min_logged_value, device=log_p_x_0.device)
         log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
 
-        # convert x_t into log_probs
-        log_x_t = index_to_log_onehot(x_t, self.num_embed)
+        log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
 
-        log_p_x_t_min_1 = self.q_posterior(log_p_x_0, log_x_t, t)
         log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
+
         x_t_min_1 = log_p_x_t_min_1.argmax(dim=1)
 
         if not return_dict:
@@ -136,25 +135,21 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
-    def q_posterior(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
+    def q_posterior(self, log_x_start, x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
         # notice that log_x_t is onehot
         # assert t.min().item() >= 0 and t.max().item() < self.num_timesteps
-        _, _, content_seq_len = log_x_t.shape
+        bsz, content_seq_len = x_t.shape
 
-        batch_size = log_x_start.size()[0]
-        onehot_x_t = log_onehot_to_index(log_x_t)
-        mask = (onehot_x_t == self.num_embed-1).unsqueeze(1) 
-        log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_x_t)
-        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
+        # step 1
+        log_qt = self.step_1(log_x_start, x_t, t)
 
-        log_qt = self.q_pred(log_x_t, t)                                  # q(xt|x0)
-        # log_qt = torch.cat((log_qt[:,:-1,:], log_zero_vector), dim=1)
-        log_qt = log_qt[:,:-1,:]
-        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)         # ct~
-        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
-        # ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1)
-        log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
+        # step 2
+
+        mask = (x_t == self.mask_class).unsqueeze(1) 
+        log_x_t = index_to_log_onehot(x_t, self.num_embed)
         
+        log_one_vector = torch.zeros(bsz, 1, 1).type_as(log_x_t)
+        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
 
         log_qt_one_timestep = self.q_pred_one_timestep(log_x_t, t)        # q(xt|xt_1)
         log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
@@ -171,6 +166,19 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = q - q_log_sum_exp
         log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
+
+    def step_1(self, log_x_start, x_t, t):
+        log_x_t = index_to_log_onehot(x_t, self.num_embed)
+        mask = (x_t == self.mask_class).unsqueeze(1) 
+
+        log_qt = self.q_pred(log_x_t, t)                                  # q(xt|x0)
+        log_qt = log_qt[:,:-1,:]
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)         # ct~
+        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
+        log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
+
+        return log_qt
+
 
     def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
         log_at = extract(self.log_at, t, log_x_t.shape)             # at
