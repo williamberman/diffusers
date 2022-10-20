@@ -143,11 +143,18 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float, device=log_p_x_0.device)
         log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
         
-        # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
-        # q = log_x_start - log_qt
+        # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0)          ...      p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0)
+        #               .                    .                                   .
+        #               .                            .                           .
+        #               .                                      .                 .
+        # p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})  ...      p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
         q = log_p_x_0 - log_q_x_t_given_x_0
-        q = torch.cat((q, log_zero_vector), dim=1)
+
+        # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}), ... ,
+        # p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
+
+        q = torch.cat((q, log_zero_vector), dim=1)
         q = q - q_log_sum_exp
         log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_q_t_given_x_t_min_1 + q_log_sum_exp
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
