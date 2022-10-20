@@ -132,7 +132,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
             latents = latents.to(self.device)
 
         # set timesteps
-        self.scheduler.set_timesteps(num_inference_steps)
+        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
 
         timesteps_tensor = self.scheduler.timesteps.to(self.device)
 

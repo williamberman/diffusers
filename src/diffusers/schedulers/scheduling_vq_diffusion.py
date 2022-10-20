@@ -109,6 +109,13 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         timesteps = np.arange(0, self.num_inference_steps)[::-1].copy()
         self.timesteps = torch.from_numpy(timesteps).to(device)
 
+        self.log_at = self.log_at.to(device)
+        self.log_bt = self.log_bt.to(device)
+        self.log_ct = self.log_ct.to(device)
+        self.log_cumprod_at = self.log_cumprod_at.to(device)
+        self.log_cumprod_bt = self.log_cumprod_bt.to(device)
+        self.log_cumprod_ct = self.log_cumprod_ct.to(device)
+
 
     def step(
         self, 
