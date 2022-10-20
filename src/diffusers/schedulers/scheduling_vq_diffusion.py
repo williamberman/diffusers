@@ -159,8 +159,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     def step_2(self, x_t, t):
         orig = self.step_2_orig(x_t, t)
         new = self.step_2_new(t=t[0], klass=x_t)
-        import pdb; pdb.set_trace()
-        return orig
+        assert (orig == new).all()
+        return new
 
     def step_2_orig(self, x_t, t):
         bsz, content_seq_len = x_t.shape
