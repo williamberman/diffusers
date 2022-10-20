@@ -134,7 +134,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             return (x_t_min_1,)
 
         num_masked = (x_t_min_1 == self.mask_class).count_nonzero()
+
+        print()
+        print("***********")
         print(f"num masked {num_masked}")
+        print("noised mask probabilities")
+        print(log_x_t_min_1[-1, :].exp())
+        print("***********")
+        print()
 
         # TODO remove
         torch.save(x_t_min_1, f"/content/diffusers-out/x_t_min_1-{t[0]}.pt")
