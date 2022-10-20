@@ -157,6 +157,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
     # TODO HERE
     def step_2(self, x_t, t):
+        orig = self.step_2_orig(x_t, t)
+        new = self.step_2_new(t=t[0], klass=x_t)
+        import pdb; pdb.set_trace()
+        return orig
+
+    def step_2_orig(self, x_t, t):
         bsz, content_seq_len = x_t.shape
 
         mask = (x_t == self.mask_class).unsqueeze(1) 
@@ -173,6 +179,28 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_qt_one_timestep = (~mask)*log_qt_one_timestep + mask*ct_vector
 
         return log_qt_one_timestep
+
+    def step_2_new(self, *, t, klass):
+        a = self.log_at[t]
+        b = self.log_bt[t]
+        c = self.log_ct[t]
+
+        klass_log_onehot = xindex_to_log_onehot(klass, self.num_embed)
+
+        klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :]
+
+        klass_log_onehot = log_Q_t[:, :-1, :]
+
+        log_Q_t = (klass_log_onehot + a).logaddexp(b)
+
+        # The whole column of each masked pixel is `c`
+        mask_class_mask = klass == self.mask_class
+        mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
+        log_Q_t[mask_class_mask] = c
+
+        log_Q_t = torch.cat((log_Q_t, klass_log_onehot_transitioning_from_masked), dim=1)
+
+        return log_Q_t
 
 
     def log_Q_t_cumulative_transitioning_to_known_class(self, *, t, klass):
@@ -212,12 +240,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         b = self.log_cumprod_bt[t]
         c = self.log_cumprod_ct[t]
 
-        log_Q_t = xindex_to_log_onehot(klass, self.num_embed)
+        # TODO we'll probably pass klass in
+
+        klass_log_onehot = xindex_to_log_onehot(klass, self.num_embed)
 
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
         # so the default one hot matrix has one too many rows. See the doc string
         # for an explanation of the dimensionality of the returned matrix.
-        log_Q_t = log_Q_t[:, :-1, :]
+        klass_log_onehot = log_Q_t[:, :-1, :]
 
         # this is a cheeky trick using the log one-hot vectors.
         #
@@ -230,7 +260,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # `0 * a + b = b` where `log_Q_t` has the 0 values in the column.
         #
         # See equation 7 for more details.
-        log_Q_t = (log_Q_t + a).logaddexp(b)
+        log_Q_t = (klass_log_onehot + a).logaddexp(b)
 
         # The whole column of each masked pixel is `c`
         mask_class_mask = klass == self.mask_class
