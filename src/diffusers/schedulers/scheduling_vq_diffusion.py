@@ -172,7 +172,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         b = self.log_cumprod_bt[t]
         c = self.log_cumprod_ct[t]
 
-        num_latent_pixels = q.shape[1]
+        num_latent_pixels = q.shape[2]
         c = c.expand(1, 1, num_latent_pixels)
 
         q = (q + a).logaddexp(b)
