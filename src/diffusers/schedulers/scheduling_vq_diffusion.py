@@ -161,7 +161,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = torch.cat((q, log_zero_vector), dim=1)
         q = self.q_pred(q, t-1)
 
-        import pdb; pdb.set_trace()
+        assert (new_q == q).all()
 
         log_EV_xtmin_given_xt_given_xstart = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
 
