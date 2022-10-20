@@ -9,6 +9,12 @@ from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from .scheduling_utils import SchedulerMixin
 
+def index_to_log_onehot(x, num_classes):
+    x_onehot = F.one_hot(x, num_classes)
+    x_onehot = x_onehot.permute(0, 2, 1)
+    log_x = torch.log(x_onehot.float().clamp(min=1e-30))
+    return log_x
+
 def gumbel_noised(logits):
     uniform = torch.rand_like(logits, device=logits.device)
     gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
@@ -81,9 +87,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_cumprod_bt = torch.log(btt)
         log_cumprod_ct = torch.log(ctt)
 
-        log_1_min_ct = log_1_min_a(log_ct)
-        log_1_min_cumprod_ct = log_1_min_a(log_cumprod_ct)
-
         # TODO remove the `to('cuda')`s
         self.log_at = log_at.float().to('cuda')
         self.log_bt = log_bt.float().to('cuda')
@@ -91,8 +94,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self.log_cumprod_at = log_cumprod_at.float().to('cuda')
         self.log_cumprod_bt = log_cumprod_bt.float().to('cuda')
         self.log_cumprod_ct = log_cumprod_ct.float().to('cuda')
-        self.log_1_min_ct = log_1_min_ct.float().to('cuda')
-        self.log_1_min_cumprod_ct = log_1_min_cumprod_ct.float().to('cuda')
 
         # setable values
         self.num_inference_steps = None
@@ -131,17 +132,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
     def q_posterior(self, log_p_x_0, x_t, t):
-        class_log_onehot = xindex_to_log_onehot(x_t, self.num_embed)
+        class_log_onehot = index_to_log_onehot(x_t, self.num_embed)
 
-        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
+        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
 
-        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, class_log_onehot=class_log_onehot, cumulative=False)
-
-        ########################
-
-        bsz, content_seq_len = x_t.shape
-        log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float, device=log_p_x_0.device)
-        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
+        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=False)
         
         # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0)          ...      p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0)
         #               .                    .                                   .
@@ -156,17 +151,13 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         q = q - q_log_sum_exp
 
-        new_q = self.xqpred(q, t[0] - 1)
+        q = self.xqpred(q, t - 1)
 
-        q = torch.cat((q, log_zero_vector), dim=1)
-        q = self.q_pred(q, t-1)
+        log_p_x_t_min_1 = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
 
-        assert (new_q == q).all()
+        return log_p_x_t_min_1
 
-        log_EV_xtmin_given_xt_given_xstart = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
-
-        return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
-
+    # TODO what to name this?
     def xqpred(self, q, t):
         a = self.log_cumprod_at[t]
         b = self.log_cumprod_bt[t]
@@ -179,26 +170,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = torch.cat((q, c), dim=1)
 
         return q
-        
-
-    def q_pred(self, log_x_start, t):           # q(xt|x0)
-        # log_x_start can be onehot or not
-        # t = (t + (self.num_timesteps + 1))%(self.num_timesteps + 1)
-        log_cumprod_at = extract(self.log_cumprod_at, t)         # at~
-        log_cumprod_bt = extract(self.log_cumprod_bt, t)         # bt~
-        log_cumprod_ct = extract(self.log_cumprod_ct, t)         # ct~
-        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t)       # 1-ct~
-        
-
-        log_probs = torch.cat(
-            [
-                log_add_exp(log_x_start[:,:-1,:]+log_cumprod_at, log_cumprod_bt),
-                log_add_exp(log_x_start[:,-1:,:]+log_1_min_cumprod_ct, log_cumprod_ct)
-            ],
-            dim=1
-        )
-
-        return log_probs
 
 
     def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
@@ -299,34 +270,3 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             log_Q_t = torch.cat((log_Q_t, class_log_onehot_transitioning_from_masked), dim=1)
 
         return log_Q_t
-
-
-def extract(a, t):
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, 1, 1)
-
-def log_onehot_to_index(log_x):
-    return log_x.argmax(1)
-
-def log_add_exp(a, b):
-    maximum = torch.max(a, b)
-    return maximum + torch.log(torch.exp(a - maximum) + torch.exp(b - maximum))
-
-def log_1_min_a(a):
-    return torch.log(1 - a.exp() + 1e-40)
-
-def index_to_log_onehot(x, num_classes):
-    assert x.max().item() < num_classes, \
-        f'Error: {x.max().item()} >= {num_classes}'
-    x_onehot = F.one_hot(x, num_classes)
-    permute_order = (0, -1) + tuple(range(1, len(x.size())))
-    x_onehot = x_onehot.permute(permute_order)
-    log_x = torch.log(x_onehot.float().clamp(min=1e-30))
-    return log_x
-
-def xindex_to_log_onehot(x, num_classes):
-    x_onehot = F.one_hot(x, num_classes)
-    x_onehot = x_onehot.permute(0, 2, 1)
-    log_x = torch.log(x_onehot.float().clamp(min=1e-30))
-    return log_x

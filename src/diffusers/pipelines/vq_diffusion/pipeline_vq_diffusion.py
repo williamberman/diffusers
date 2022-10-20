@@ -151,8 +151,10 @@ class VQDiffusionPipeline(DiffusionPipeline):
 
             log_p_x_0 = self.truncate(log_p_x_0, truncation_rate)
 
-            # TODO - do this better
-            if t[0] == 0:
+            # TODO - do not repeat t initially
+            t = t[0]
+
+            if t == 0:
                 x_t = log_p_x_0.argmax(dim=1)
             else:
                 # compute the previous noisy sample x_t -> x_t-1
