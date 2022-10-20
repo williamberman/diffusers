@@ -135,14 +135,29 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
-    def q_posterior(self, log_x_start, x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
-        # notice that log_x_t is onehot
-        # assert t.min().item() >= 0 and t.max().item() < self.num_timesteps
-        bsz, content_seq_len = x_t.shape
-
+    def q_posterior(self, log_x_start, x_t, t):
         log_q_x_t_given_x_0 = self.log_Q_t_cumulative_transitioning_to_known_class(t=t[0], klass=x_t)
 
+        log_qt_one_timestep = self.step_2(x_t, t)
+
         ########################
+
+        bsz, content_seq_len = x_t.shape
+        log_one_vector = torch.zeros(bsz, 1, 1, dtype=torch.float)
+        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
+        
+        # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
+        # q = log_x_start - log_qt
+        q = log_x_start[:,:-1,:] - log_q_x_t_given_x_0
+        q = torch.cat((q, log_zero_vector), dim=1)
+        q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
+        q = q - q_log_sum_exp
+        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
+
+    # TODO HERE
+    def step_2(self, x_t, t):
+        bsz, content_seq_len = x_t.shape
 
         mask = (x_t == self.mask_class).unsqueeze(1) 
         log_x_t = index_to_log_onehot(x_t, self.num_embed)
@@ -156,15 +171,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
         ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
         log_qt_one_timestep = (~mask)*log_qt_one_timestep + mask*ct_vector
-        
-        # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
-        # q = log_x_start - log_qt
-        q = log_x_start[:,:-1,:] - log_q_x_t_given_x_0
-        q = torch.cat((q, log_zero_vector), dim=1)
-        q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
-        q = q - q_log_sum_exp
-        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
-        return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
+
+        return log_qt_one_timestep
+
 
     def log_Q_t_cumulative_transitioning_to_known_class(self, *, t, klass):
         """
