@@ -136,9 +136,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
     def q_posterior(self, log_x_start, x_t, t):
-        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, cumulative=True)
+        class_log_onehot = xindex_to_log_onehot(x_t, self.num_embed)
 
-        log_qt_one_timestep = self.step_2(x_t, t)
+        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t[0], class_log_onehot=class_log_onehot, cumulative=True)
+
+        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t[0], class_log_onehot=class_log_onehot, cumulative=False)
 
         ########################
 
@@ -152,58 +154,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = torch.cat((q, log_zero_vector), dim=1)
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
         q = q - q_log_sum_exp
-        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_q_t_given_x_t_min_1 + q_log_sum_exp
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
 
-    # TODO HERE
-    def step_2(self, x_t, t):
-        orig = self.step_2_orig(x_t, t)
-        new = self.log_Q_t_transitioning_to_known_class(t=t[0], klass=x_t, cumulative=False)
-        assert (orig == new).all()
-        return new
 
-    def step_2_orig(self, x_t, t):
-        bsz, content_seq_len = x_t.shape
-
-        mask = (x_t == self.mask_class).unsqueeze(1) 
-        log_x_t = index_to_log_onehot(x_t, self.num_embed)
-        
-        log_one_vector = torch.zeros(bsz, 1, 1).type_as(log_x_t)
-        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, content_seq_len)
-
-        log_qt_one_timestep = self.q_pred_one_timestep(log_x_t, t)        # q(xt|xt_1)
-        log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
-        log_ct = extract(self.log_ct, t)         # ct
-        ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
-        ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
-        log_qt_one_timestep = (~mask)*log_qt_one_timestep + mask*ct_vector
-
-        return log_qt_one_timestep
-
-    def log_Q_t_transitioning_to_known_class(self, *, t, klass):
-        a = self.log_at[t]
-        b = self.log_bt[t]
-        c = self.log_ct[t]
-
-        klass_log_onehot = xindex_to_log_onehot(klass, self.num_embed)
-
-        klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :].unsqueeze(0)
-
-        klass_log_onehot = klass_log_onehot[:, :-1, :]
-
-        log_Q_t = (klass_log_onehot + a).logaddexp(b)
-
-        # The whole column of each masked pixel is `c`
-        mask_class_mask = klass == self.mask_class
-        mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
-        log_Q_t[mask_class_mask] = c
-
-        log_Q_t = torch.cat((log_Q_t, klass_log_onehot_transitioning_from_masked), dim=1)
-
-        return log_Q_t
-
-
-    def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, cumulative: bool):
+    def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
         """
         Returns the log probabilities of the rows from the (cumulative or non-cumulative) transition matrix 
         for each latent pixel in `klass`.
@@ -217,6 +172,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
             klass (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
                 The classes of each latent pixel at time `t`.
+
+            class_log_onehot (`torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`):
+                The log one-hot vectors of `klass`
 
             cumulative (`bool`):
                 If cumulative is `False`, the columns are taken from the transition matrix `t-1`->`t`.
@@ -258,16 +216,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             b = self.log_bt[t]
             c = self.log_ct[t]
 
-        klass_log_onehot = xindex_to_log_onehot(klass, self.num_embed)
-
         if not cumulative:
             # TODO document this
-            klass_log_onehot_transitioning_from_masked = klass_log_onehot[:, -1, :].unsqueeze(0)
+            class_log_onehot_transitioning_from_masked = class_log_onehot[:, -1, :].unsqueeze(0)
 
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
         # so the default one hot matrix has one too many rows. See the doc string
         # for an explanation of the dimensionality of the returned matrix.
-        klass_log_onehot = klass_log_onehot[:, :-1, :]
+        class_log_onehot = class_log_onehot[:, :-1, :]
 
         # this is a cheeky trick using the log one-hot vectors.
         #
@@ -280,7 +236,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # `0 * a + b = b` where `log_Q_t` has the 0 values in the column.
         #
         # See equation 7 for more details.
-        log_Q_t = (klass_log_onehot + a).logaddexp(b)
+        log_Q_t = (class_log_onehot + a).logaddexp(b)
 
         # The whole column of each masked pixel is `c`
         mask_class_mask = klass == self.mask_class
@@ -288,7 +244,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_Q_t[mask_class_mask] = c
 
         if not cumulative:
-            log_Q_t = torch.cat((log_Q_t, klass_log_onehot_transitioning_from_masked), dim=1)
+            log_Q_t = torch.cat((log_Q_t, class_log_onehot_transitioning_from_masked), dim=1)
 
         return log_Q_t
 
