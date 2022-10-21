@@ -1,10 +1,8 @@
 from dataclasses import dataclass
 from typing import Tuple, Union
-import math
 
 import torch
 import numpy as np
-from scipy.special import logsumexp
 import torch.nn.functional as F
 
 from ..configuration_utils import ConfigMixin, register_to_config
@@ -148,6 +146,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return VQDiffusionSchedulerOutput(x_t_min_1=x_t_min_1)
 
     def q_posterior(self, log_p_x_0, x_t, t):
+        """
+        Equation (11)
+
+        Equation (5)
+
+        Equation (11) stated in terms of forward probabilities
+        """
+
         class_log_onehot = index_to_log_onehot(x_t, self.num_embed)
 
         log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
@@ -172,26 +178,45 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0  ...      p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n
         q = q - q_log_sum_exp
 
-        # (p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_{t-1} + b_{t-1}          ...      (p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_{t-1} + b_{t-1}
-        #                       .                                                .                                              .
-        #                       .                                                        .                                      .
-        #                       .                                                                  .                            .
-        # (p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_{t-1} + b_{t-1}  ...      (p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_{t-1} + b_{t-1}
-        # c_{t-1}                                                                      ...      c_{t-1}
+        # (p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}          ...      (p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}
+        #                                         .                                                .                                              .
+        #                                         .                                                        .                                      .
+        #                                         .                                                                  .                            .
+        # (p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}  ...      (p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}
+        # c_cumulative_{t-1}                                                                                 ...      c_cumulative_{t-1}
         q = self.apply_cumulative_transitions(q, t - 1)
 
-        # ((p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_0               ...      ((p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_n
-        #                                       .                                                                 .                                              .
-        #                                       .                                                                         .                                      .
-        #                                       .                                                                                   .                            .
-        # ((p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_0  ...      ((p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_n
-        # c_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0                                                                            ...      c_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0
+        # ((p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_0              ...      ((p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_n
+        #                                                            .                                                                 .                                              .
+        #                                                            .                                                                         .                                      .
+        #                                                            .                                                                                   .                            .
+        # ((p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_0  ...      ((p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_n
+        # c_cumulative_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0                                                                                       ...      c_cumulative_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0
         log_p_x_t_min_1 = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
 
-        # For each row, there are two possible cases. 
+        # For each column, there are two possible cases. 
+        #
+        # Where:
+        # - sum(p_0(x_0))) is summing over all classes for x_0
         #
         # 1. x_t is masked
         #
+        # Simplifying the expression, the column vector is:
+        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = c_0 | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
+        #                                                      .
+        #                                                      .
+        #                                                      .
+        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = c_{k-1} | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
+        # (c_cumulative_{t-1} / c_cumulative_t) * sum(p_0(x_0))
+        #
+        # From equation (11) stated in terms of forward probabilities from the docstring, the last row is trivially verified.
+        #
+        # For the other rows, we can state the equation as ...
+        #
+        # For a `x_{t-1}` is class `c_i`:
+        # (c_t / c_cumulative_t) * [b_cumulative_{t-1} * p(x_0=c_0) + ... + (a_cumulative_{t-1} + b_cumulative_{t-1}) * p(x_0=c_i) + ... + b_cumulative_{k-1} * p(x_0=c_{k-1})]
+        #
+        # This verifies the other rows.
         # ...
         #
         # 2. x_t is not masked
