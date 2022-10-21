@@ -211,7 +211,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # For each column, there are two possible cases. 
         #
         # Where:
-        # - sum(p_0(x_0))) is summing over all classes for x_0
+        # - sum(p_n(x_0))) is summing over all classes for x_0
         # - C_i is the class transitioning from (not to be confused with c_t and c_cumulative_t being used for gamma's)
         # - C_j is the class transitioning to
         #
@@ -221,11 +221,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #                                                      .
         #                                                      .
         #                                                      .
-        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = C_i | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
+        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_n(x_0 = C_i | x_t) + b_cumulative_{t-1} * sum(p_n(x_0)))
         #                                                      .
         #                                                      .
         #                                                      .
-        # (c_cumulative_{t-1} / c_cumulative_t) * sum(p_0(x_0))
+        # (c_cumulative_{t-1} / c_cumulative_t) * sum(p_n(x_0))
         #
         # From equation (11) stated in terms of forward probabilities from the docstring, the last row is trivially verified.
         #
@@ -241,11 +241,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #                                                      .
         #                                                      .
         #                                                      .
-        # C_j != C_i:        b_t * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / b_cumulative_t) * p_0(x_0 = C_i) + ... + (b_cumulative_{t-1} / (a_cumulative_t + b_cumulative_t)) * p_0(c_0=C_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
+        # C_j != C_i:        b_t * ((b_cumulative_{t-1} / b_cumulative_t) * p_n(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / b_cumulative_t) * p_n(x_0 = C_i) + ... + (b_cumulative_{t-1} / (a_cumulative_t + b_cumulative_t)) * p_n(c_0=C_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_n(x_0 = c_{k-1}))
         #                                                      .
         #                                                      .
         #                                                      .
-        # C_j = C_i: (a_t + b_t) * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / (a_cumulative_t + b_cumulative_t)) * p_0(x_0 = C_i = C_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
+        # C_j = C_i: (a_t + b_t) * ((b_cumulative_{t-1} / b_cumulative_t) * p_n(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / (a_cumulative_t + b_cumulative_t)) * p_n(x_0 = C_i = C_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_n(x_0 = c_{k-1}))
         #                                                      .
         #                                                      .
         #                                                      .
