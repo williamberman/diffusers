@@ -140,18 +140,39 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
     def q_posterior(self, log_p_x_0, x_t, t):
         """
-        Equation (11)
+        Calculates the log probabilities for the predicted classes of the image at timestep `t-1`. I.e. Equation (11).
 
-        Equation (5)
+        Instead of directly computing equation (11) in logspace, we use Equation (5) to restate Equation (11) in terms
+        of only forward probabilities.
 
-        Equation (11) stated in terms of forward probabilities
+        Equation (11) stated in terms of forward probabilities via Equation (5):
+
+        Where:
+        - the sum is over x_0 = {C_0 ... C_{k-1}} (classes for x_0)
+
+        p(x_{t-1} | x_t) = sum( q(x_t | x_{t-1}) * q(x_{t-1} | x_0) * p(x_0) / q(x_t | x_0) )
+
+        Args:
+            log_p_x_0: (`torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`):
+                The log probabilities for the predicted classes of the initial latent pixels. Does not include
+                a prediction for the masked class as the initial unnoised image cannot be masked.
+
+            x_t: (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
+                The classes of each latent pixel at time `t`
+
+            t (torch.Long):
+                The timestep that determines which transition matrix is used.
+
+        Returns:
+            `torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`:
+                The log probabilities for the predicted classes of the image at timestep `t-1`. I.e. Equation (11).
         """
 
-        class_log_onehot = index_to_log_onehot(x_t, self.num_embed)
+        log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
 
-        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
+        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t, x_t=x_t, log_onehot_x_t=log_onehot_x_t, cumulative=True)
 
-        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=False)
+        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t, x_t=x_t, log_onehot_x_t=log_onehot_x_t, cumulative=False)
         
         # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0)          ...      p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0)
         #               .                    .                                   .
@@ -191,8 +212,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #
         # Where:
         # - sum(p_0(x_0))) is summing over all classes for x_0
-        # - c_i is the class transitioning from (not to be confused with c_t and c_cumulative_t being used for gamma's)
-        # - c_j is the class transitioning to
+        # - C_i is the class transitioning from (not to be confused with c_t and c_cumulative_t being used for gamma's)
+        # - C_j is the class transitioning to
         #
         # 1. x_t is masked i.e. x_t = c_k
         #
@@ -200,7 +221,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #                                                      .
         #                                                      .
         #                                                      .
-        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = c_i | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
+        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = C_i | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
         #                                                      .
         #                                                      .
         #                                                      .
@@ -210,21 +231,21 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #
         # For the other rows, we can state the equation as ...
         #
-        # (c_t / c_cumulative_t) * [b_cumulative_{t-1} * p(x_0=c_0) + ... + (a_cumulative_{t-1} + b_cumulative_{t-1}) * p(x_0=c_i) + ... + b_cumulative_{k-1} * p(x_0=c_{k-1})]
+        # (c_t / c_cumulative_t) * [b_cumulative_{t-1} * p(x_0=c_0) + ... + (a_cumulative_{t-1} + b_cumulative_{t-1}) * p(x_0=C_i) + ... + b_cumulative_{k-1} * p(x_0=c_{k-1})]
         #
         # This verifies the other rows.
         #
         # 2. x_t is not masked
         #
-        # Simplifying the expression, there are two cases for the rows of the column vector, where c_j = c_i and where c_j != c_i:
+        # Simplifying the expression, there are two cases for the rows of the column vector, where C_j = C_i and where C_j != C_i:
         #                                                      .
         #                                                      .
         #                                                      .
-        # c_j != c_i:        b_t * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / b_cumulative_t) * p_0(x_0 = c_i) + ... + (b_cumulative_{t-1} / (a_cumulative_t + b_cumulative_t)) * p_0(c_0=c_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
+        # C_j != C_i:        b_t * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / b_cumulative_t) * p_0(x_0 = C_i) + ... + (b_cumulative_{t-1} / (a_cumulative_t + b_cumulative_t)) * p_0(c_0=C_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
         #                                                      .
         #                                                      .
         #                                                      .
-        # c_j = c_i: (a_t + b_t) * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / (a_cumulative_t + b_cumulative_t)) * p_0(x_0 = c_i = c_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
+        # C_j = C_i: (a_t + b_t) * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / (a_cumulative_t + b_cumulative_t)) * p_0(x_0 = C_i = C_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
         #                                                      .
         #                                                      .
         #                                                      .
@@ -233,10 +254,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # The last row is trivially verified. The other rows can be verified by directly expanding equation (11) stated in terms of forward probabilities.
         return log_p_x_t_min_1
 
-    def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
+    def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, x_t: torch.LongTensor, log_onehot_x_t: torch.FloatTensor, cumulative: bool):
         """
         Returns the log probabilities of the rows from the (cumulative or non-cumulative) transition matrix 
-        for each latent pixel in `klass`.
+        for each latent pixel in `x_t`.
 
         See equation (7) for the complete non-cumulative transition matrix. The complete cumulative transition
         matrix is the same structure except the parameters (alpha, beta, gamma) are the cumulative analogs.
@@ -245,11 +266,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             t (torch.Long):
                 The timestep that determines which transition matrix is used.
 
-            klass (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
+            x_t (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
                 The classes of each latent pixel at time `t`.
 
-            class_log_onehot (`torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`):
-                The log one-hot vectors of `klass`
+            log_onehot_x_t (`torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`):
+                The log one-hot vectors of `x_t`
 
             cumulative (`bool`):
                 If cumulative is `False`, the columns are taken from the transition matrix `t-1`->`t`.
@@ -302,12 +323,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             #
             # `P(x_t=mask|x_{t-1=mask}) = 1` and 1 will be the value of the last row of the onehot vector
             # if x_t is masked
-            class_log_onehot_transitioning_from_masked = class_log_onehot[:, -1, :].unsqueeze(0)
+            log_onehot_x_t_transitioning_from_masked = log_onehot_x_t[:, -1, :].unsqueeze(0)
 
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
         # so the default one hot matrix has one too many rows. See the doc string
         # for an explanation of the dimensionality of the returned matrix.
-        class_log_onehot = class_log_onehot[:, :-1, :]
+        log_onehot_x_t = log_onehot_x_t[:, :-1, :]
 
         # this is a cheeky trick to produce the transition probabilities using log one-hot vectors.
         #
@@ -320,15 +341,15 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # `0 * a + b = b` where `log_Q_t` has the 0 values in the column.
         #
         # See equation 7 for more details.
-        log_Q_t = (class_log_onehot + a).logaddexp(b)
+        log_Q_t = (log_onehot_x_t + a).logaddexp(b)
 
         # The whole column of each masked pixel is `c`
-        mask_class_mask = klass == self.mask_class
+        mask_class_mask = x_t == self.mask_class
         mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
         log_Q_t[mask_class_mask] = c
 
         if not cumulative:
-            log_Q_t = torch.cat((log_Q_t, class_log_onehot_transitioning_from_masked), dim=1)
+            log_Q_t = torch.cat((log_Q_t, log_onehot_x_t_transitioning_from_masked), dim=1)
 
         return log_Q_t
 
