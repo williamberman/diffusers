@@ -198,9 +198,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_b_t = self.log_bt[t]
         log_c_t = self.log_ct[t]
 
-        log_a_t_min_1_cumulative = self.log_cumprod_at[t]
-        log_b_t_min_1_cumulative = self.log_cumprod_bt[t]
-        log_c_t_min_1_cumulative = self.log_cumprod_ct[t]
+        log_a_t_min_1_cumulative = self.log_cumprod_at[t-1]
+        log_b_t_min_1_cumulative = self.log_cumprod_bt[t-1]
+        log_c_t_min_1_cumulative = self.log_cumprod_ct[t-1]
 
 
         # q(x_{t-1}=C_0 | x_t=C_0) or q(x_{t-1}=C_1 | x_t=C_0)
