@@ -92,8 +92,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self.log_cumprod_bt = log_cumprod_bt.float()
         self.log_cumprod_ct = log_cumprod_ct.float()
 
-        import pdb; pdb.set_trace()
-
         # setable values
         self.num_inference_steps = None
         self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy())
@@ -124,17 +122,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_p_x_0, 
         x_t, 
         t,
-        truncation_rate,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         if t == 0:
             log_p_x_t_min_1 = log_p_x_0
         else:
             log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
-
-            xlog_p_x_t_min_1 = self.new_q_posterior(log_p_x_0, x_t, t, truncation_rate)
-
-            import pdb; pdb.set_trace()
 
         log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
 
@@ -198,30 +191,46 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #
         # Where:
         # - sum(p_0(x_0))) is summing over all classes for x_0
+        # - c_i is the class transitioning from (not to be confused with c_t and c_cumulative_t being used for gamma's)
+        # - c_j is the class transitioning to
         #
-        # 1. x_t is masked
+        # 1. x_t is masked i.e. x_t = c_k
         #
         # Simplifying the expression, the column vector is:
-        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = c_0 | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
         #                                                      .
         #                                                      .
         #                                                      .
-        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = c_{k-1} | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
+        # (c_t / c_cumulative_t) * (a_cumulative_{t-1} * p_0(x_0 = c_i | x_t) + b_cumulative_{t-1} * sum(p_0(x_0)))
+        #                                                      .
+        #                                                      .
+        #                                                      .
         # (c_cumulative_{t-1} / c_cumulative_t) * sum(p_0(x_0))
         #
         # From equation (11) stated in terms of forward probabilities from the docstring, the last row is trivially verified.
         #
         # For the other rows, we can state the equation as ...
         #
-        # For a `x_{t-1}` is class `c_i`:
         # (c_t / c_cumulative_t) * [b_cumulative_{t-1} * p(x_0=c_0) + ... + (a_cumulative_{t-1} + b_cumulative_{t-1}) * p(x_0=c_i) + ... + b_cumulative_{k-1} * p(x_0=c_{k-1})]
         #
         # This verifies the other rows.
-        # ...
         #
         # 2. x_t is not masked
         #
-
+        # Simplifying the expression, there are two cases for the rows of the column vector, where c_j = c_i and where c_j != c_i:
+        #                                                      .
+        #                                                      .
+        #                                                      .
+        # c_j != c_i:        b_t * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / b_cumulative_t) * p_0(x_0 = c_i) + ... + (b_cumulative_{t-1} / (a_cumulative_t + b_cumulative_t)) * p_0(c_0=c_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
+        #                                                      .
+        #                                                      .
+        #                                                      .
+        # c_j = c_i: (a_t + b_t) * ((b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_0) + ... + ((a_cumulative_{t-1} + b_cumulative_{t-1}) / (a_cumulative_t + b_cumulative_t)) * p_0(x_0 = c_i = c_j) + ... + (b_cumulative_{t-1} / b_cumulative_t) * p_0(x_0 = c_{k-1}))
+        #                                                      .
+        #                                                      .
+        #                                                      .
+        # 0
+        # 
+        # The last row is trivially verified. The other rows can be verified by directly expanding equation (11) stated in terms of forward probabilities.
         return log_p_x_t_min_1
 
     def apply_cumulative_transitions(self, q, t):
