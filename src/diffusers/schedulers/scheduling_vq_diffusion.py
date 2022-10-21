@@ -4,6 +4,7 @@ import math
 
 import torch
 import numpy as np
+from scipy.special import logsumexp
 import torch.nn.functional as F
 
 from ..configuration_utils import ConfigMixin, register_to_config
@@ -205,7 +206,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         # q(x_{t-1}=C_0 | x_t=C_0) or q(x_{t-1}=C_1 | x_t=C_0)
 
-        transition_to_unmasked_class_param1_numerator = (log_a_t_min_1_cumulative + log_b_t).logaddexp(torch.tensor(-1).log() + log_a_t_cumulative + log_b_t_min_1_cumulative)
+        (log_a_t_min_1_cumulative + log_b_t).exp() - (log_a_t_cumulative + log_b_t_min_1_cumulative).exp()
+
+        transition_to_unmasked_class_param1_numerator = logsumexp([(log_a_t_min_1_cumulative + log_b_t).cpu().numpy(), (log_a_t_cumulative + log_b_t_min_1_cumulative).cpu().numpy()], b=[1, -1])
         transition_to_unmasked_class_param1_denominator = log_a_t_cumulative.logaddexp(log_b_t_cumulative) + log_b_t_cumulative
         transition_to_unmasked_class_param1 = transition_to_unmasked_class_param1_numerator - transition_to_unmasked_class_param1_denominator
 
