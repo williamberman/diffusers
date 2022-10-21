@@ -246,9 +246,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
 
 
-        masked_class_mask = (x_t == self.mask_class).expand(-1, self.num_embed, -1)
+        mask_class_mask = x_t == self.mask_class
+        mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
 
-        log_p_x_t_min_1 = torch.where(masked_class_mask, transition_to_masked_class, transition_to_unmasked_class)
+        log_p_x_t_min_1 = torch.where(mask_class_mask, transition_to_masked_class, transition_to_unmasked_class)
 
         return log_p_x_t_min_1
 
