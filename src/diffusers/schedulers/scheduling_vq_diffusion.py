@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Tuple, Union
+import math
 
 import torch
 import numpy as np
@@ -185,7 +186,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return q
 
     def new_q_posterior(self, log_p_x_0, x_t, t, truncation_rate):
-        log_truncation_rate = truncation_rate.log()
+        log_truncation_rate = math.log(truncation_rate)
 
         class_log_onehot = index_to_log_onehot(x_t, self.num_embed)
 
