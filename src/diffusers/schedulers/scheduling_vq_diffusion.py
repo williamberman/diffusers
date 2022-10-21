@@ -94,6 +94,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self.log_cumprod_bt = log_cumprod_bt.float()
         self.log_cumprod_ct = log_cumprod_ct.float()
 
+        import pdb; pdb.set_trace()
+
         # setable values
         self.num_inference_steps = None
         self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy())
@@ -205,8 +207,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
 
         # q(x_{t-1}=C_0 | x_t=C_0) or q(x_{t-1}=C_1 | x_t=C_0)
-
-        (log_a_t_min_1_cumulative + log_b_t).exp() - (log_a_t_cumulative + log_b_t_min_1_cumulative).exp()
 
         transition_to_unmasked_class_param1_numerator = logsumexp([(log_a_t_min_1_cumulative + log_b_t_cumulative).cpu().numpy(), (log_a_t_cumulative + log_b_t_min_1_cumulative).cpu().numpy()], b=[1, -1])
         transition_to_unmasked_class_param1_denominator = log_a_t_cumulative.logaddexp(log_b_t_cumulative) + log_b_t_cumulative
