@@ -142,7 +142,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         """
         Calculates the log probabilities for the predicted classes of the image at timestep `t-1`. I.e. Equation (11).
 
-        Instead of directly computing equation (11) in logspace, we use Equation (5) to restate Equation (11) in terms
+        Instead of directly computing equation (11), we use Equation (5) to restate Equation (11) in terms
         of only forward probabilities.
 
         Equation (11) stated in terms of forward probabilities via Equation (5):
