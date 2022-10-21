@@ -233,20 +233,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # The last row is trivially verified. The other rows can be verified by directly expanding equation (11) stated in terms of forward probabilities.
         return log_p_x_t_min_1
 
-    def apply_cumulative_transitions(self, q, t):
-        a = self.log_cumprod_at[t]
-        b = self.log_cumprod_bt[t]
-        c = self.log_cumprod_ct[t]
-
-        num_latent_pixels = q.shape[2]
-        c = c.expand(1, 1, num_latent_pixels)
-
-        q = (q + a).logaddexp(b)
-        q = torch.cat((q, c), dim=1)
-
-        return q
-
-
     def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
         """
         Returns the log probabilities of the rows from the (cumulative or non-cumulative) transition matrix 
@@ -345,3 +331,17 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             log_Q_t = torch.cat((log_Q_t, class_log_onehot_transitioning_from_masked), dim=1)
 
         return log_Q_t
+
+    def apply_cumulative_transitions(self, q, t):
+        a = self.log_cumprod_at[t]
+        b = self.log_cumprod_bt[t]
+        c = self.log_cumprod_ct[t]
+
+        num_latent_pixels = q.shape[2]
+        c = c.expand(1, 1, num_latent_pixels)
+
+        q = (q + a).logaddexp(b)
+        q = torch.cat((q, c), dim=1)
+
+        return q
+
