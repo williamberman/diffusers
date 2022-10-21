@@ -225,6 +225,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             torch.full_like(transition_to_unmasked_class[:, -1:, :], transition_to_unmasked_class_from_masked_class),
         ), dim=1)
 
+        import pdb; pdb.set_trace()
+
 
         # q(x_{t-1}=C_0 | x_t = C_k)
 
