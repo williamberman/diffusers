@@ -188,7 +188,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     def new_q_posterior(self, log_p_x_0, x_t, t, truncation_rate):
         log_truncation_rate = math.log(truncation_rate)
 
-        class_log_onehot = index_to_log_onehot(x_t, self.num_embed)
+        class_log_onehot = index_to_log_onehot(x_t, self.num_embed)[:, :-1, :]
 
         log_a_t_cumulative = self.log_cumprod_at[t]
         log_b_t_cumulative = self.log_cumprod_at[t]
