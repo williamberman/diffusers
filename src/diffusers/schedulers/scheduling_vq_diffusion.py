@@ -227,7 +227,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #                                                      .
         # (c_cumulative_{t-1} / c_cumulative_t) * sum(p_n(x_0))
         #
-        # From equation (11) stated in terms of forward probabilities from the docstring, the last row is trivially verified.
+        # From equation (11) stated in terms of forward probabilities, the last row is trivially verified.
         #
         # For the other rows, we can state the equation as ...
         #
