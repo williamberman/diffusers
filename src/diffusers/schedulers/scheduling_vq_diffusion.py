@@ -191,16 +191,16 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         class_log_onehot = index_to_log_onehot(x_t, self.num_embed)[:, :-1, :]
 
         log_a_t_cumulative = self.log_cumprod_at[t]
-        log_b_t_cumulative = self.log_cumprod_at[t]
-        log_c_t_cumulative = self.log_cumprod_at[t]
+        log_b_t_cumulative = self.log_cumprod_bt[t]
+        log_c_t_cumulative = self.log_cumprod_ct[t]
 
         log_a_t = self.log_at[t]
-        log_b_t = self.log_at[t]
-        log_c_t = self.log_at[t]
+        log_b_t = self.log_bt[t]
+        log_c_t = self.log_ct[t]
 
         log_a_t_min_1_cumulative = self.log_cumprod_at[t]
-        log_b_t_min_1_cumulative = self.log_cumprod_at[t]
-        log_c_t_min_1_cumulative = self.log_cumprod_at[t]
+        log_b_t_min_1_cumulative = self.log_cumprod_bt[t]
+        log_c_t_min_1_cumulative = self.log_cumprod_ct[t]
 
 
         # q(x_{t-1}=C_0 | x_t=C_0) or q(x_{t-1}=C_1 | x_t=C_0)
@@ -250,8 +250,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed, -1)
 
         log_p_x_t_min_1 = torch.where(mask_class_mask, transition_to_masked_class, transition_to_unmasked_class)
-
-        import pdb; pdb.set_trace()
 
         return log_p_x_t_min_1
 
