@@ -122,12 +122,17 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_p_x_0, 
         x_t, 
         t,
+        truncation_rate,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         if t == 0:
             log_p_x_t_min_1 = log_p_x_0
         else:
             log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
+
+            xlog_p_x_t_min_1 = self.new_q_posterior(log_p_x_0, x_t, t, truncation_rate)
+
+            import pdb; pdb.set_trace()
 
         log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
 
@@ -163,8 +168,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         log_p_x_t_min_1 = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
 
-        import pdb; pdb.set_trace()
-
         return log_p_x_t_min_1
 
     # TODO what to name this?
@@ -186,10 +189,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         class_log_onehot = index_to_log_onehot(x_t, self.num_embed)
 
-        log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=True)
-
-        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(t=t, klass=x_t, class_log_onehot=class_log_onehot, cumulative=False)
-
         log_a_t_cumulative = self.log_cumprod_at[t]
         log_b_t_cumulative = self.log_cumprod_at[t]
         log_c_t_cumulative = self.log_cumprod_at[t]
@@ -202,9 +201,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_b_t_min_1_cumulative = self.log_cumprod_at[t]
         log_c_t_min_1_cumulative = self.log_cumprod_at[t]
 
-        log_a_t_min_1 = self.log_at[t]
-        log_b_t_min_1 = self.log_at[t]
-        log_c_t_min_1 = self.log_at[t]
+
+        # q(x_{t-1}=C_0 | x_t=C_0) or q(x_{t-1}=C_1 | x_t=C_0)
 
         transition_to_unmasked_class_param1_numerator = (log_a_t_min_1_cumulative + log_b_t).logaddexp(torch.tensor(-1).log() + log_a_t_cumulative + log_b_t_min_1_cumulative)
         transition_to_unmasked_class_param1_denominator = log_a_t_cumulative.logaddexp(log_b_t_cumulative) + log_b_t_cumulative
@@ -212,7 +210,46 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         transition_to_unmasked_class_param2 = log_b_t_min_1_cumulative - log_b_t + log_truncation_rate
 
-        # TODO HERE
+        step_1 = (log_p_x_0 + transition_to_unmasked_class_param1).logaddexp(transition_to_unmasked_class_param2)
+
+        coefficients = (class_log_onehot + log_a_t).logaddexp(log_b_t)
+
+        # q(x_{t-1}=C_k | x_t=C_0 )
+        transition_to_unmasked_class_from_masked_class = -torch.inf
+
+        transition_to_unmasked_class = coefficients + step_1
+
+        transition_to_unmasked_class = torch.cat((
+            transition_to_unmasked_class,
+            torch.full_like(transition_to_unmasked_class[:, -1:, :], transition_to_unmasked_class_from_masked_class),
+        ), dim=1)
+
+
+        # q(x_{t-1}=C_0 | x_t = C_k)
+
+        transition_to_masked_param = log_b_t_min_1_cumulative + log_truncation_rate
+
+        step_1 = (log_p_x_0 + log_a_t_min_1_cumulative).logaddexp(transition_to_masked_param)
+
+        coefficients = log_c_t - log_c_t_cumulative
+
+        # q(x_{t-1}=C_k | x_t=C_k )
+        transition_to_masked_class_from_masked_class = log_c_t_min_1_cumulative - log_c_t_cumulative + log_truncation_rate
+
+        transition_to_masked_class = coefficients + step_1
+
+        transition_to_masked_class = torch.cat((
+            transition_to_masked_class,
+            torch.full_like(transition_to_masked_class[:, -1:, :], transition_to_masked_class_from_masked_class),
+        ), dim=1)
+
+
+
+        masked_class_mask = (x_t == self.mask_class).expand(-1, self.num_embed, -1)
+
+        log_p_x_t_min_1 = torch.where(masked_class_mask, transition_to_masked_class, transition_to_unmasked_class)
+
+        return log_p_x_t_min_1
 
 
     def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
