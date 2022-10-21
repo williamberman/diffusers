@@ -251,6 +251,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         log_p_x_t_min_1 = torch.where(mask_class_mask, transition_to_masked_class, transition_to_unmasked_class)
 
+        import pdb; pdb.set_trace()
+
         return log_p_x_t_min_1
 
 
