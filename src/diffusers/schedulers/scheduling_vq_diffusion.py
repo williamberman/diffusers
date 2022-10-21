@@ -208,11 +208,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         (log_a_t_min_1_cumulative + log_b_t).exp() - (log_a_t_cumulative + log_b_t_min_1_cumulative).exp()
 
-        transition_to_unmasked_class_param1_numerator = logsumexp([(log_a_t_min_1_cumulative + log_b_t).cpu().numpy(), (log_a_t_cumulative + log_b_t_min_1_cumulative).cpu().numpy()], b=[1, -1])
+        transition_to_unmasked_class_param1_numerator = logsumexp([(log_a_t_min_1_cumulative + log_b_t_cumulative).cpu().numpy(), (log_a_t_cumulative + log_b_t_min_1_cumulative).cpu().numpy()], b=[1, -1])
         transition_to_unmasked_class_param1_denominator = log_a_t_cumulative.logaddexp(log_b_t_cumulative) + log_b_t_cumulative
         transition_to_unmasked_class_param1 = transition_to_unmasked_class_param1_numerator - transition_to_unmasked_class_param1_denominator
 
-        transition_to_unmasked_class_param2 = log_b_t_min_1_cumulative - log_b_t + log_truncation_rate
+        transition_to_unmasked_class_param2 = log_b_t_min_1_cumulative - log_b_t_cumulative + log_truncation_rate
 
         step_1 = (log_p_x_0 + transition_to_unmasked_class_param1).logaddexp(transition_to_unmasked_class_param2)
 
