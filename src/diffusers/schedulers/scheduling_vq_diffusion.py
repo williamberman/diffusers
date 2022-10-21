@@ -161,21 +161,45 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})  ...      p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
         q = log_p_x_0 - log_q_x_t_given_x_0
 
-        # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}), ... ,
-        # p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
+        # sum_0 = p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}), ... ,
+        # sum_n = p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
 
-        # TODO HERE
+        # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0          ...      p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n
+        #                        .                             .                                   .
+        #                        .                                     .                           .
+        #                        .                                               .                 .
+        # p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0  ...      p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n
         q = q - q_log_sum_exp
 
-        q = self.xqpred(q, t - 1)
+        # (p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_{t-1} + b_{t-1}          ...      (p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_{t-1} + b_{t-1}
+        #                       .                                                .                                              .
+        #                       .                                                        .                                      .
+        #                       .                                                                  .                            .
+        # (p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_{t-1} + b_{t-1}  ...      (p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_{t-1} + b_{t-1}
+        # c_{t-1}                                                                      ...      c_{t-1}
+        q = self.apply_cumulative_transitions(q, t - 1)
 
+        # ((p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_0               ...      ((p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_n
+        #                                       .                                                                 .                                              .
+        #                                       .                                                                         .                                      .
+        #                                       .                                                                                   .                            .
+        # ((p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_0  ...      ((p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_{t-1} + b_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_n
+        # c_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0                                                                            ...      c_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0
         log_p_x_t_min_1 = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
+
+        # For each row, there are two possible cases. 
+        #
+        # 1. x_t is masked
+        #
+        # ...
+        #
+        # 2. x_t is not masked
+        #
 
         return log_p_x_t_min_1
 
-    # TODO what to name this?
-    def xqpred(self, q, t):
+    def apply_cumulative_transitions(self, q, t):
         a = self.log_cumprod_at[t]
         b = self.log_cumprod_bt[t]
         c = self.log_cumprod_ct[t]
@@ -187,76 +211,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = torch.cat((q, c), dim=1)
 
         return q
-
-    def new_q_posterior(self, log_p_x_0, x_t, t, truncation_rate):
-        log_truncation_rate = math.log(truncation_rate)
-
-        class_log_onehot = index_to_log_onehot(x_t, self.num_embed)[:, :-1, :]
-
-        log_a_t_cumulative = self.log_cumprod_at[t]
-        log_b_t_cumulative = self.log_cumprod_bt[t]
-        log_c_t_cumulative = self.log_cumprod_ct[t]
-
-        log_a_t = self.log_at[t]
-        log_b_t = self.log_bt[t]
-        log_c_t = self.log_ct[t]
-
-        log_a_t_min_1_cumulative = self.log_cumprod_at[t-1]
-        log_b_t_min_1_cumulative = self.log_cumprod_bt[t-1]
-        log_c_t_min_1_cumulative = self.log_cumprod_ct[t-1]
-
-
-        # q(x_{t-1}=C_0 | x_t=C_0) or q(x_{t-1}=C_1 | x_t=C_0)
-
-        transition_to_unmasked_class_param1_numerator = logsumexp([(log_a_t_min_1_cumulative + log_b_t_cumulative).cpu().numpy(), (log_a_t_cumulative + log_b_t_min_1_cumulative).cpu().numpy()], b=[1, -1])
-        transition_to_unmasked_class_param1_denominator = log_a_t_cumulative.logaddexp(log_b_t_cumulative) + log_b_t_cumulative
-        transition_to_unmasked_class_param1 = transition_to_unmasked_class_param1_numerator - transition_to_unmasked_class_param1_denominator
-
-        transition_to_unmasked_class_param2 = log_b_t_min_1_cumulative - log_b_t_cumulative + log_truncation_rate
-
-        step_1 = (log_p_x_0 + transition_to_unmasked_class_param1).logaddexp(transition_to_unmasked_class_param2)
-
-        coefficients = (class_log_onehot + log_a_t).logaddexp(log_b_t)
-
-        # q(x_{t-1}=C_k | x_t=C_0 )
-        transition_to_unmasked_class_from_masked_class = -torch.inf
-
-        transition_to_unmasked_class = coefficients + step_1
-
-        transition_to_unmasked_class = torch.cat((
-            transition_to_unmasked_class,
-            torch.full_like(transition_to_unmasked_class[:, -1:, :], transition_to_unmasked_class_from_masked_class),
-        ), dim=1)
-
-        import pdb; pdb.set_trace()
-
-
-        # q(x_{t-1}=C_0 | x_t = C_k)
-
-        transition_to_masked_param = log_b_t_min_1_cumulative + log_truncation_rate
-
-        step_1 = (log_p_x_0 + log_a_t_min_1_cumulative).logaddexp(transition_to_masked_param)
-
-        coefficients = log_c_t - log_c_t_cumulative
-
-        # q(x_{t-1}=C_k | x_t=C_k )
-        transition_to_masked_class_from_masked_class = log_c_t_min_1_cumulative - log_c_t_cumulative + log_truncation_rate
-
-        transition_to_masked_class = coefficients + step_1
-
-        transition_to_masked_class = torch.cat((
-            transition_to_masked_class,
-            torch.full_like(transition_to_masked_class[:, -1:, :], transition_to_masked_class_from_masked_class),
-        ), dim=1)
-
-
-
-        mask_class_mask = x_t == self.mask_class
-        mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed, -1)
-
-        log_p_x_t_min_1 = torch.where(mask_class_mask, transition_to_masked_class, transition_to_unmasked_class)
-
-        return log_p_x_t_min_1
 
 
     def log_Q_t_transitioning_to_known_class(self, *, t: torch.int, klass: torch.LongTensor, class_log_onehot: torch.FloatTensor, cumulative: bool):
