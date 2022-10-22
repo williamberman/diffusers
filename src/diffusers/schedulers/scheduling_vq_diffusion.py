@@ -116,7 +116,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self.log_cumprod_bt = self.log_cumprod_bt.to(device)
         self.log_cumprod_ct = self.log_cumprod_ct.to(device)
 
-
     def step(
         self, 
         log_p_x_0, 
@@ -124,6 +123,30 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         t,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
+        """
+        Predict the sample at the previous timestep via the reverse transition distribution i.e. Equation (11).
+        See the docstring for `self.q_posterior` for more in depth docs on how Equation (11) is computed.
+
+        Args:
+            log_p_x_0: (`torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`):
+                The log probabilities for the predicted classes of the initial latent pixels. Does not include
+                a prediction for the masked class as the initial unnoised image cannot be masked.
+
+            x_t: (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
+                The classes of each latent pixel at time `t`
+
+            t (torch.Long):
+                The timestep that determines which transition matrix is used.
+
+            
+            return_dict (`bool`): 
+                option for returning tuple rather than VQDiffusionSchedulerOutput class
+
+        Returns:
+            [`~schedulers.scheduling_utils.VQDiffusionSchedulerOutput`] or `tuple`:
+            [`~schedulers.scheduling_utils.VQDiffusionSchedulerOutput`] if `return_dict` is True, otherwise a `tuple`. When
+            returning a tuple, the first element is the sample tensor.
+        """
         if t == 0:
             log_p_x_t_min_1 = log_p_x_0
         else:
@@ -167,7 +190,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             `torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`:
                 The log probabilities for the predicted classes of the image at timestep `t-1`. I.e. Equation (11).
         """
-
         log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
 
         log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(t=t, x_t=x_t, log_onehot_x_t=log_onehot_x_t, cumulative=True)
