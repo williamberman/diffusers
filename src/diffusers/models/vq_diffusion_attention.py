@@ -34,7 +34,7 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         self.width = width
         self.num_latent_pixels = self.height * self.width
 
-        self.latent_image_embedding = DalleMaskImageEmbedding(
+        self.latent_image_embedding = ImageEmbeddings(
             num_embed=self.num_embed, embed_dim=self.inner_dim, height=height, width=width
         )
 
@@ -77,8 +77,14 @@ class VQDiffusionTransformer(ModelMixin, ConfigMixin):
         return log_p_x_0
 
 
-# TODO(will) - document this
-class DalleMaskImageEmbedding(nn.Module):
+class ImageEmbeddings(nn.Module):
+    """
+    Converts latent image classes into vector embeddings for the transformer.
+    Sums the 
+
+    Note that the vector embeddings for the transformer are different than the vector embeddings from
+    the VQVAE 
+    """
     def __init__(
         self,
         num_embed,
