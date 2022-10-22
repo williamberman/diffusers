@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import torch
 import numpy as np
@@ -15,8 +15,8 @@ def index_to_log_onehot(x, num_classes):
     log_x = torch.log(x_onehot.float().clamp(min=1e-30))
     return log_x
 
-def gumbel_noised(logits):
-    uniform = torch.rand_like(logits, device=logits.device)
+def gumbel_noised(logits, generator):
+    uniform = torch.rand_like(logits, device=logits.device, generator=generator)
     gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
     noised = gumbel_noise + logits
     return noised
@@ -121,9 +121,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
     def step(
         self, 
-        log_p_x_0, 
-        x_t, 
-        t,
+        log_p_x_0: torch.FloatTensor, 
+        x_t: torch.LongTensor, 
+        t: torch.Long,
+        generator: Optional[torch.Generator]=None,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         """
@@ -138,8 +139,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             x_t: (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
                 The classes of each latent pixel at time `t`
 
-            t (torch.Long):
+            t (`torch.Long`):
                 The timestep that determines which transition matrix is used.
+
+            generator: (`torch.Generator` or None):
+                RNG for the noise applied to p(x_{t-1} | x_t) before it is sampled from.
             
             return_dict (`bool`): 
                 option for returning tuple rather than VQDiffusionSchedulerOutput class
@@ -154,7 +158,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         else:
             log_p_x_t_min_1 = self.q_posterior(log_p_x_0, x_t, t)
 
-        log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1)
+        log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
 
         x_t_min_1 = log_p_x_t_min_1.argmax(dim=1)
 

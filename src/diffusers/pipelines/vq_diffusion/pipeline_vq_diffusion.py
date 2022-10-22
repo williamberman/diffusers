@@ -148,7 +148,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
             log_p_x_0 = log_p_x_0.clamp(-70)
 
             # compute the previous noisy sample x_t -> x_t-1
-            x_t = self.scheduler.step(log_p_x_0, x_t, t).x_t_min_1
+            x_t = self.scheduler.step(log_p_x_0, x_t, t, generator=generator).x_t_min_1
 
             # call the callback, if provided
             if callback is not None and i % callback_steps == 0:
