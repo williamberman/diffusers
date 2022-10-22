@@ -30,18 +30,40 @@ class VQDiffusionPipelineOutput(BaseOutput):
 
 
 class VQDiffusionPipeline(DiffusionPipeline):
+    r"""
+    Pipeline for text-to-image generation using VQ Diffusion
+
+    This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
+    library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
+
+    Args:
+        vqvae ([`VQModel`]):
+            Vector Quantized Variational Auto-Encoder (VAE) Model to encode and decode images to and from latent representations.
+        text_encoder ([`CLIPTextModel`]):
+            Frozen text-encoder. VQ Diffusion uses the text portion of
+            [CLIP](https://huggingface.co/docs/transformers/model_doc/clip#transformers.CLIPTextModel), specifically
+            the [clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32) variant.
+        tokenizer (`CLIPTokenizer`):
+            Tokenizer of class
+            [CLIPTokenizer](https://huggingface.co/docs/transformers/v4.21.0/en/model_doc/clip#transformers.CLIPTokenizer).
+        transformer (`VQDiffusionTransformer`):
+            Conditional transformer to denoise the encoded image latents.
+        scheduler ([`VQDiffusionScheduler`]):
+            A scheduler to be used in combination with `transformer` to denoise the encoded image latents.
+    """
+
     vqvae: VQModel
-    transformer: VQDiffusionTransformer
     text_encoder: CLIPTextModel
     tokenizer: CLIPTokenizer
+    transformer: VQDiffusionTransformer
     scheduler: VQDiffusionScheduler
 
     def __init__(
         self,
         vqvae: VQModel,
-        transformer: VQDiffusionTransformer,
         text_encoder: CLIPTextModel,
         tokenizer: CLIPTokenizer,
+        transformer: VQDiffusionTransformer,
         scheduler: VQDiffusionScheduler,
     ):
         super().__init__()
@@ -58,9 +80,8 @@ class VQDiffusionPipeline(DiffusionPipeline):
     def __call__(
         self,
         prompt: Union[str, List[str]],
-        *,
-        truncation_rate: float = 1.0,
         num_inference_steps: int = 100,
+        truncation_rate: float = 1.0,
         num_images_per_prompt: int = 1, # TODO not working
         generator: Optional[torch.Generator] = None,
         latents: Optional[torch.FloatTensor] = None,
@@ -69,6 +90,41 @@ class VQDiffusionPipeline(DiffusionPipeline):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
     ):
+        """
+        Function invoked when calling the pipeline for generation.
+
+        Args:
+            prompt (`str` or `List[str]`):
+                The prompt or prompts to guide the image generation.
+            num_inference_steps (`int`, *optional*, defaults to 100):
+                The number of denoising steps. More denoising steps usually lead to a higher quality image at the
+                expense of slower inference.
+            truncation_rate: (`float`, *optional*, defaults to 1.0 (disabled)):
+                Used to "truncate" the predicted classes for x_0 such that the cumulative probability for a pixel
+                is at most `truncation_rate`. The lowest probabilities that would increase the cumulative probability 
+                above `truncation_rate` are set to zero.
+            num_images_per_prompt (`int`, *optional*, defaults to 1):
+                The number of images to generate per prompt.
+            generator (`torch.Generator`, *optional*):
+                A [torch generator](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make generation
+                deterministic.
+            latents (`torch.FloatTensor` of shape (batch), *optional*):
+                Pre-generated noisy latents to be used as inputs for image generation. Must be valid embedding indices.
+                Can be used to tweak the same generation with different prompts. If not provided, a latents
+                tensor will be generated of completely masked latent pixels.
+            output_type (`str`, *optional*, defaults to `"pil"`):
+                The output format of the generate image. Choose between
+                [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~pipelines.stable_diffusion.StableDiffusionPipelineOutput`] instead of a
+                plain tuple.
+            callback (`Callable`, *optional*):
+                A function that will be called every `callback_steps` steps during inference. The function will be
+                called with the following arguments: `callback(step: int, timestep: int, latents: torch.FloatTensor)`.
+            callback_steps (`int`, *optional*, defaults to 1):
+                The frequency at which the `callback` function will be called. If not specified, the callback will be
+                called at every step.
+        """
         if isinstance(prompt, str):
             batch_size = 1
         elif isinstance(prompt, list):
@@ -122,6 +178,8 @@ class VQDiffusionPipeline(DiffusionPipeline):
         else:
             if latents.shape != latents_shape:
                 raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {latents_shape}")
+            if (latents < 0).any() or (latents >= self.transformer.num_embed).any():
+                raise ValueError(f"Unexpected latents value(s). All latents be valid embedding indices i.e. in the range 0, {self.transformer.num_embed - 1} (inclusive).")
             latents = latents.to(self.device)
 
         # set timesteps

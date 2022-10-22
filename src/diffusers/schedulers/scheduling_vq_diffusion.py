@@ -184,7 +184,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self, 
         log_p_x_0: torch.FloatTensor, 
         x_t: torch.LongTensor, 
-        t: torch.Long,
+        t: torch.long,
         generator: Optional[torch.Generator]=None,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
@@ -200,7 +200,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             x_t: (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
                 The classes of each latent pixel at time `t`
 
-            t (`torch.Long`):
+            t (`torch.long`):
                 The timestep that determines which transition matrix is used.
 
             generator: (`torch.Generator` or None):
