@@ -104,6 +104,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         Args:
             num_inference_steps (`int`):
                 the number of diffusion steps used when generating samples with a pre-trained model.
+
+            device (`str` or `torch.device`):
+                device to place the timesteps and the diffusion process parameters (alpha, beta, gamma) on.
         """
         self.num_inference_steps = num_inference_steps
         timesteps = np.arange(0, self.num_inference_steps)[::-1].copy()
@@ -137,7 +140,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
             t (torch.Long):
                 The timestep that determines which transition matrix is used.
-
             
             return_dict (`bool`): 
                 option for returning tuple rather than VQDiffusionSchedulerOutput class
