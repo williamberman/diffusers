@@ -439,7 +439,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             #
             # `P(x_t=mask|x_{t-1=mask}) = 1` and 1 will be the value of the last row of the onehot vector
             # if x_t is masked
-            log_onehot_x_t_transitioning_from_masked = log_onehot_x_t[:, -1, :].unsqueeze(0)
+            log_onehot_x_t_transitioning_from_masked = log_onehot_x_t[:, -1, :].unsqueeze(1)
 
         # `index_to_log_onehot` will add onehot vectors for masked pixels,
         # so the default one hot matrix has one too many rows. See the doc string
