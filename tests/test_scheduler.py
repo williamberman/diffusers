@@ -29,6 +29,7 @@ from diffusers import (
     LMSDiscreteScheduler,
     PNDMScheduler,
     ScoreSdeVeScheduler,
+    VQDiffusionScheduler
 )
 from diffusers.utils import torch_device
 
@@ -318,7 +319,6 @@ class SchedulerCommonTest(unittest.TestCase):
             t = scheduler.timesteps[5][None]
             noised = scheduler.add_noise(scaled_sample, noise, t)
             self.assertEqual(noised.shape, scaled_sample.shape)
-
 
 class DDPMSchedulerTest(SchedulerCommonTest):
     scheduler_classes = (DDPMScheduler,)
@@ -1238,3 +1238,8 @@ class IPNDMSchedulerTest(SchedulerCommonTest):
         result_mean = torch.mean(torch.abs(sample))
 
         assert abs(result_mean.item() - 2540529) < 10
+
+
+class VQDiffusionSchedulerTest(SchedulerCommonTest):
+    ... 
+    # TODO
