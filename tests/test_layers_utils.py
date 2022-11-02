@@ -390,6 +390,7 @@ class SpatialTransformerTests(unittest.TestCase):
         )
         assert torch.allclose(output_slice.flatten(), expected_slice, atol=1e-3)
 
+    @unittest.skipIf(torch_device == "mps", "MPS does not support float64")
     def test_spatial_transformer_discrete(self):
         torch.manual_seed(0)
         if torch.cuda.is_available():
@@ -424,14 +425,7 @@ class SpatialTransformerTests(unittest.TestCase):
         assert torch.allclose(output_slice.flatten(), expected_slice, atol=1e-3)
 
     def test_spatial_transformer_default_norm_layers(self):
-        spatial_transformer_block = SpatialTransformer(
-            n_heads=1,
-            d_head=32,
-            discrete=True,
-            num_embed=5,
-            height=16,
-            width=2,
-        )
+        spatial_transformer_block = SpatialTransformer(n_heads=1, d_head=32, in_channels=32)
 
         assert spatial_transformer_block.transformer_blocks[0].norm1.__class__ == nn.LayerNorm
         assert spatial_transformer_block.transformer_blocks[0].norm2.__class__ == nn.LayerNorm
@@ -441,10 +435,7 @@ class SpatialTransformerTests(unittest.TestCase):
         spatial_transformer_block = SpatialTransformer(
             n_heads=1,
             d_head=32,
-            discrete=True,
-            num_embed=5,
-            height=16,
-            width=2,
+            in_channels=32,
             norm_layers=["AdaLayerNorm", "AdaLayerNorm", "LayerNorm"],
             diffusion_steps=5,
         )
@@ -458,10 +449,7 @@ class SpatialTransformerTests(unittest.TestCase):
             SpatialTransformer(
                 n_heads=1,
                 d_head=32,
-                discrete=True,
-                num_embed=5,
-                height=16,
-                width=2,
+                in_channels=32,
                 norm_layers=["AdaLayerNorm", "AdaLayerNorm", "LayerNorm"],
             )
 
@@ -471,10 +459,7 @@ class SpatialTransformerTests(unittest.TestCase):
         spatial_transformer_block = SpatialTransformer(
             n_heads=1,
             d_head=32,
-            discrete=True,
-            num_embed=5,
-            height=16,
-            width=2,
+            in_channels=32,
         )
 
         assert spatial_transformer_block.transformer_blocks[0].ff.net[0].__class__ == GEGLU
@@ -497,10 +482,7 @@ class SpatialTransformerTests(unittest.TestCase):
         spatial_transformer_block = SpatialTransformer(
             n_heads=1,
             d_head=32,
-            discrete=True,
-            num_embed=5,
-            height=16,
-            width=2,
+            in_channels=32,
             ff_layers=["Linear", "ApproximateGELU", "Linear", "Dropout"],
         )
 
@@ -520,9 +502,7 @@ class SpatialTransformerTests(unittest.TestCase):
 
     def test_spatial_transformer_ff_layers_too_few_dim_changes(self):
         with pytest.raises(Exception) as e_info:
-            SpatialTransformer(
-                n_heads=1, d_head=32, discrete=True, num_embed=5, height=16, width=2, ff_layers=["Linear"]
-            )
+            SpatialTransformer(n_heads=1, d_head=32, in_channels=32, ff_layers=["Linear"])
 
         assert (
             e_info.value.args[0]
@@ -533,9 +513,7 @@ class SpatialTransformerTests(unittest.TestCase):
     def test_spatial_transformer_ff_layers_too_many_dim_changes(self):
         for layer in ["Linear", "GEGLU"]:
             with pytest.raises(Exception) as e_info:
-                SpatialTransformer(
-                    n_heads=1, d_head=32, discrete=True, num_embed=5, height=16, width=2, ff_layers=[layer] * 3
-                )
+                SpatialTransformer(n_heads=1, d_head=32, in_channels=32, ff_layers=[layer] * 3)
 
             assert (
                 e_info.value.args[0]
@@ -544,9 +522,7 @@ class SpatialTransformerTests(unittest.TestCase):
             )
 
     def test_spatial_transformer_attention_bias(self):
-        spatial_transformer_block = SpatialTransformer(
-            n_heads=1, d_head=32, discrete=True, num_embed=5, height=16, width=2, attention_bias=True
-        )
+        spatial_transformer_block = SpatialTransformer(n_heads=1, d_head=32, in_channels=32, attention_bias=True)
 
         assert spatial_transformer_block.transformer_blocks[0].attn1.to_q.bias is not None
         assert spatial_transformer_block.transformer_blocks[0].attn1.to_k.bias is not None
