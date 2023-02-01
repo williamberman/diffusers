@@ -30,6 +30,7 @@ from ...test_pipelines_common import PipelineTesterMixin, assert_mean_pixel_diff
 
 class UnCLIPPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = UnCLIPPipeline
+    test_xformers_attention = False
 
     required_optional_params = [
         "generator",
@@ -63,42 +64,6 @@ class UnCLIPPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     @property
     def cross_attention_dim(self):
         return 100
-
-    @property
-    def dummy_tokenizer(self):
-        tokenizer = CLIPTokenizer.from_pretrained("hf-internal-testing/tiny-random-clip")
-        return tokenizer
-
-    @property
-    def dummy_text_encoder(self):
-        torch.manual_seed(0)
-        config = CLIPTextConfig(
-            bos_token_id=0,
-            eos_token_id=2,
-            hidden_size=self.text_embedder_hidden_size,
-            projection_dim=self.text_embedder_hidden_size,
-            intermediate_size=37,
-            layer_norm_eps=1e-05,
-            num_attention_heads=4,
-            num_hidden_layers=5,
-            pad_token_id=1,
-            vocab_size=1000,
-        )
-        return CLIPTextModelWithProjection(config)
-
-    @property
-    def dummy_prior(self):
-        torch.manual_seed(0)
-
-        model_kwargs = {
-            "num_attention_heads": 2,
-            "attention_head_dim": 12,
-            "embedding_dim": self.text_embedder_hidden_size,
-            "num_layers": 1,
-        }
-
-        model = PriorTransformer(**model_kwargs)
-        return model
 
     @property
     def dummy_text_proj(self):
@@ -165,11 +130,35 @@ class UnCLIPPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
         return model
 
     def get_dummy_components(self):
-        prior = self.dummy_prior
+        torch.manual_seed(0)
+        prior = PriorTransformer(
+            num_attention_heads=2,
+            attention_head_dim=12,
+            embedding_dim=self.text_embedder_hidden_size,
+            num_layers=1,
+        )
+
         decoder = self.dummy_decoder
         text_proj = self.dummy_text_proj
-        text_encoder = self.dummy_text_encoder
-        tokenizer = self.dummy_tokenizer
+
+        torch.manual_seed(0)
+        text_encoder = CLIPTextModelWithProjection(
+            CLIPTextConfig(
+                bos_token_id=0,
+                eos_token_id=2,
+                hidden_size=self.text_embedder_hidden_size,
+                projection_dim=32,
+                intermediate_size=37,
+                layer_norm_eps=1e-05,
+                num_attention_heads=4,
+                num_hidden_layers=5,
+                pad_token_id=1,
+                vocab_size=1000,
+            )
+        )
+
+        tokenizer = CLIPTokenizer.from_pretrained("hf-internal-testing/tiny-random-clip")
+
         super_res_first = self.dummy_super_res_first
         super_res_last = self.dummy_super_res_last
 

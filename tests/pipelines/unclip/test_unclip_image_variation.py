@@ -82,23 +82,6 @@ class UnCLIPImageVariationPipelineFastTests(PipelineTesterMixin, unittest.TestCa
         return tokenizer
 
     @property
-    def dummy_text_encoder(self):
-        torch.manual_seed(0)
-        config = CLIPTextConfig(
-            bos_token_id=0,
-            eos_token_id=2,
-            hidden_size=self.text_embedder_hidden_size,
-            projection_dim=self.text_embedder_hidden_size,
-            intermediate_size=37,
-            layer_norm_eps=1e-05,
-            num_attention_heads=4,
-            num_hidden_layers=5,
-            pad_token_id=1,
-            vocab_size=1000,
-        )
-        return CLIPTextModelWithProjection(config)
-
-    @property
     def dummy_image_encoder(self):
         torch.manual_seed(0)
         config = CLIPVisionConfig(
@@ -179,8 +162,25 @@ class UnCLIPImageVariationPipelineFastTests(PipelineTesterMixin, unittest.TestCa
     def get_dummy_components(self):
         decoder = self.dummy_decoder
         text_proj = self.dummy_text_proj
-        text_encoder = self.dummy_text_encoder
-        tokenizer = self.dummy_tokenizer
+
+        torch.manual_seed(0)
+        text_encoder = CLIPTextModelWithProjection(
+            CLIPTextConfig(
+                bos_token_id=0,
+                eos_token_id=2,
+                hidden_size=self.text_embedder_hidden_size,
+                projection_dim=32,
+                intermediate_size=37,
+                layer_norm_eps=1e-05,
+                num_attention_heads=4,
+                num_hidden_layers=5,
+                pad_token_id=1,
+                vocab_size=1000,
+            )
+        )
+
+        tokenizer = CLIPTokenizer.from_pretrained("hf-internal-testing/tiny-random-clip")
+
         super_res_first = self.dummy_super_res_first
         super_res_last = self.dummy_super_res_last
 

@@ -3,7 +3,6 @@ from typing import List, Optional, Union
 
 import numpy as np
 import PIL
-from PIL import Image
 
 from ...utils import BaseOutput, is_torch_available, is_transformers_available
 
@@ -28,6 +27,4 @@ class AltDiffusionPipelineOutput(BaseOutput):
 
 
 if is_transformers_available() and is_torch_available():
-    from .modeling_roberta_series import RobertaSeriesModelWithTransformation
-    from .pipeline_alt_diffusion import AltDiffusionPipeline
-    from .pipeline_alt_diffusion_img2img import AltDiffusionImg2ImgPipeline
+    pass

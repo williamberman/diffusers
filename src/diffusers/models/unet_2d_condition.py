@@ -145,6 +145,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         time_cond_proj_dim: Optional[int] = None,
         conv_in_kernel: int = 3,
         conv_out_kernel: int = 3,
+        projection_class_embeddings_input_dim: Optional[int] = None,
     ):
         super().__init__()
 
@@ -190,6 +191,12 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             self.class_embedding = TimestepEmbedding(timestep_input_dim, time_embed_dim)
         elif class_embed_type == "identity":
             self.class_embedding = nn.Identity(time_embed_dim, time_embed_dim)
+        elif class_embed_type == "projection":
+            if projection_class_embeddings_input_dim is None:
+                raise ValueError(
+                    "`class_embed_type`: 'projection' requires `projection_class_embeddings_input_dim` be set"
+                )
+            self.class_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
         else:
             self.class_embedding = None
 
