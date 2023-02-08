@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, Optional, Union
 
 import numpy as np
 import PIL
+from PIL import Image
 
 from ...utils import BaseOutput, is_torch_available, is_transformers_available
 
@@ -65,4 +67,5 @@ class StableDiffusionSafePipelineOutput(BaseOutput):
 
 
 if is_transformers_available() and is_torch_available():
-    pass
+    from .pipeline_stable_diffusion_safe import StableDiffusionPipelineSafe
+    from .safety_checker import SafeStableDiffusionSafetyChecker
