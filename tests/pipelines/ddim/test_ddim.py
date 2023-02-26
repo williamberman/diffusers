@@ -21,7 +21,7 @@ import torch
 from diffusers import DDIMPipeline, DDIMScheduler, UNet2DModel
 from diffusers.utils.testing_utils import require_torch_gpu, slow, torch_device
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import UNCONDITIONAL_IMAGE_GENERATION_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -29,6 +29,13 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class DDIMPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = DDIMPipeline
+    required_params = UNCONDITIONAL_IMAGE_GENERATION_PARAMS
+    required_optional_params = PipelineTesterMixin.required_optional_params - {
+        "num_images_per_prompt",
+        "latents",
+        "callback",
+        "callback_steps",
+    }
     test_cpu_offload = False
 
     def get_dummy_components(self):

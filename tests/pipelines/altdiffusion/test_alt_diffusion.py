@@ -28,7 +28,7 @@ from diffusers.pipelines.alt_diffusion.modeling_roberta_series import (
 from diffusers.utils import slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import TEXT_TO_IMAGE_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -36,6 +36,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class AltDiffusionPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = AltDiffusionPipeline
+    required_params = TEXT_TO_IMAGE_PARAMS
 
     def get_dummy_components(self):
         torch.manual_seed(0)

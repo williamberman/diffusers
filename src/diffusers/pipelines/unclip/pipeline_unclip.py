@@ -13,18 +13,17 @@
 # limitations under the License.
 
 import inspect
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 from torch.nn import functional as F
 from transformers import CLIPTextModelWithProjection, CLIPTokenizer
-from transformers.models.clip.modeling_clip import CLIPTextModelOutput
 
 from ...models import PriorTransformer, UNet2DConditionModel, UNet2DModel
 from ...pipelines import DiffusionPipeline
 from ...pipelines.pipeline_utils import ImagePipelineOutput
 from ...schedulers import UnCLIPScheduler
-from ...utils import is_accelerate_available, logging, randn_tensor
+from ...utils import deprecate, is_accelerate_available, logging, randn_tensor
 from .text_proj import UnCLIPTextProjModel
 
 
@@ -120,10 +119,11 @@ class UnCLIPPipeline(DiffusionPipeline):
         device,
         num_images_per_prompt,
         do_classifier_free_guidance,
-        text_model_output: Optional[Union[CLIPTextModelOutput, Tuple]] = None,
+        prompt_embeds: Optional[torch.Tensor] = None,
+        text_encoder_hidden_states: Optional[torch.Tensor] = None,
         text_attention_mask: Optional[torch.Tensor] = None,
     ):
-        if text_model_output is None:
+        if prompt_embeds is None:
             batch_size = len(prompt) if isinstance(prompt, list) else 1
             # get prompt text embeddings
             text_inputs = self.tokenizer(
@@ -156,8 +156,7 @@ class UnCLIPPipeline(DiffusionPipeline):
             text_encoder_hidden_states = text_encoder_output.last_hidden_state
 
         else:
-            batch_size = text_model_output[0].shape[0]
-            prompt_embeds, text_encoder_hidden_states = text_model_output[0], text_model_output[1]
+            batch_size = prompt_embeds.shape[0]
             text_mask = text_attention_mask
 
         prompt_embeds = prompt_embeds.repeat_interleave(num_images_per_prompt, dim=0)
@@ -260,12 +259,15 @@ class UnCLIPPipeline(DiffusionPipeline):
         prior_latents: Optional[torch.FloatTensor] = None,
         decoder_latents: Optional[torch.FloatTensor] = None,
         super_res_latents: Optional[torch.FloatTensor] = None,
-        text_model_output: Optional[Union[CLIPTextModelOutput, Tuple]] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        text_encoder_hidden_states: Optional[torch.FloatTensor] = None,
         text_attention_mask: Optional[torch.Tensor] = None,
         prior_guidance_scale: float = 4.0,
-        decoder_guidance_scale: float = 8.0,
+        guidance_scale: float = 8.0,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ):
         """
         Function invoked when calling the pipeline for generation.
@@ -294,6 +296,9 @@ class UnCLIPPipeline(DiffusionPipeline):
                 Pre-generated noisy latents to be used as inputs for the decoder.
             super_res_latents (`torch.FloatTensor` of shape (batch size, channels, super res height, super res width), *optional*):
                 Pre-generated noisy latents to be used as inputs for the decoder.
+            prompt_embeds (`torch.FloatTensor`, *optional*):
+                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
+                provided, text embeddings will be generated from `prompt` input argument.
             prior_guidance_scale (`float`, *optional*, defaults to 4.0):
                 Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
@@ -306,10 +311,6 @@ class UnCLIPPipeline(DiffusionPipeline):
                 Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
                 1`. Higher guidance scale encourages to generate images that are closely linked to the text `prompt`,
                 usually at the expense of lower image quality.
-            text_model_output (`CLIPTextModelOutput`, *optional*):
-                Pre-defined CLIPTextModel outputs that can be derived from the text encoder. Pre-defined text outputs
-                can be passed for tasks like text embedding interpolations. Make sure to also pass
-                `text_attention_mask` in this case. `prompt` can the be left to `None`.
             text_attention_mask (`torch.Tensor`, *optional*):
                 Pre-defined CLIP text attention mask that can be derived from the tokenizer. Pre-defined text attention
                 masks are necessary when passing `text_model_output`.
@@ -318,7 +319,21 @@ class UnCLIPPipeline(DiffusionPipeline):
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~pipelines.ImagePipelineOutput`] instead of a plain tuple.
+            cross_attention_kwargs (`dict`, *optional*):
+                A kwargs dictionary that if specified is passed along to the `AttnProcessor` as defined under
+                `self.processor` in
+                [diffusers.cross_attention](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/cross_attention.py).
         """
+        message = "Please use `guidance_scale` instead of `decoder_guidance_scale`"
+        decoder_guidance_scale = deprecate("decoder_guidance_scale", "1.0.0", message, take_from=kwargs)
+        guidance_scale = decoder_guidance_scale or guidance_scale
+
+        message = "Please use `prompt_embeds` and `text_encoder_hidden_states` instead of `text_model_output`"
+        text_model_output = deprecate("text_model_output", "1.0.0", message, take_from=kwargs)
+        if text_model_output is not None:
+            prompt_embeds = text_model_output[0]
+            text_encoder_hidden_states = text_model_output[1]
+
         if prompt is not None:
             if isinstance(prompt, str):
                 batch_size = 1
@@ -327,16 +342,22 @@ class UnCLIPPipeline(DiffusionPipeline):
             else:
                 raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
         else:
-            batch_size = text_model_output[0].shape[0]
+            batch_size = prompt_embeds.shape[0]
 
         device = self._execution_device
 
         batch_size = batch_size * num_images_per_prompt
 
-        do_classifier_free_guidance = prior_guidance_scale > 1.0 or decoder_guidance_scale > 1.0
+        do_classifier_free_guidance = prior_guidance_scale > 1.0 or guidance_scale > 1.0
 
         prompt_embeds, text_encoder_hidden_states, text_mask = self._encode_prompt(
-            prompt, device, num_images_per_prompt, do_classifier_free_guidance, text_model_output, text_attention_mask
+            prompt,
+            device,
+            num_images_per_prompt,
+            do_classifier_free_guidance,
+            prompt_embeds,
+            text_encoder_hidden_states,
+            text_attention_mask,
         )
 
         # prior
@@ -436,13 +457,14 @@ class UnCLIPPipeline(DiffusionPipeline):
                 encoder_hidden_states=text_encoder_hidden_states,
                 class_labels=additive_clip_time_embeddings,
                 attention_mask=decoder_text_mask,
+                cross_attention_kwargs=cross_attention_kwargs,
             ).sample
 
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred_uncond, _ = noise_pred_uncond.split(latent_model_input.shape[1], dim=1)
                 noise_pred_text, predicted_variance = noise_pred_text.split(latent_model_input.shape[1], dim=1)
-                noise_pred = noise_pred_uncond + decoder_guidance_scale * (noise_pred_text - noise_pred_uncond)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                 noise_pred = torch.cat([noise_pred, predicted_variance], dim=1)
 
             if i + 1 == decoder_timesteps_tensor.shape[0]:

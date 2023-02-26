@@ -23,7 +23,7 @@ from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, DDIMScheduler, LDMTextToImagePipeline, UNet2DConditionModel
 from diffusers.utils.testing_utils import load_numpy, nightly, require_torch_gpu, slow, torch_device
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import TEXT_TO_IMAGE_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -31,6 +31,8 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class LDMTextToImagePipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = LDMTextToImagePipeline
+    required_params = TEXT_TO_IMAGE_PARAMS - {"negative_prompt", "negative_prompt_embeds"}
+    required_optional_params = PipelineTesterMixin.required_optional_params - {"num_images_per_prompt"}
     test_cpu_offload = False
 
     def get_dummy_components(self):

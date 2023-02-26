@@ -18,11 +18,16 @@ from diffusers.pipelines.stable_diffusion.stable_unclip_image_normalizer import 
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.utils.testing_utils import floats_tensor, load_image, load_numpy, require_torch_gpu, slow, torch_device
 
-from ...test_pipelines_common import PipelineTesterMixin, assert_mean_pixel_difference
+from ...test_pipelines_common import (
+    TEXT_GUIDED_IMAGE_VARIATION_PARAMS,
+    PipelineTesterMixin,
+    assert_mean_pixel_difference,
+)
 
 
 class StableUnCLIPImg2ImgPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = StableUnCLIPImg2ImgPipeline
+    required_params = TEXT_GUIDED_IMAGE_VARIATION_PARAMS
 
     def get_dummy_components(self):
         embedder_hidden_size = 32

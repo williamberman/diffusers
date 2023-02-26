@@ -32,7 +32,7 @@ from diffusers import (
 from diffusers.utils import floats_tensor, load_image, load_numpy, nightly, slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import IMAGE_VARIATION_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -40,6 +40,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class StableDiffusionImageVariationPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = StableDiffusionImageVariationPipeline
+    required_params = IMAGE_VARIATION_PARAMS
 
     def get_dummy_components(self):
         torch.manual_seed(0)

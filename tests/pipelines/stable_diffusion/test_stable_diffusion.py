@@ -39,7 +39,7 @@ from diffusers.utils import load_numpy, nightly, slow, torch_device
 from diffusers.utils.testing_utils import CaptureLogger, require_torch_gpu
 
 from ...models.test_models_unet_2d_condition import create_lora_layers
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import TEXT_TO_IMAGE_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -47,6 +47,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class StableDiffusionPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = StableDiffusionPipeline
+    required_params = TEXT_TO_IMAGE_PARAMS
 
     def get_dummy_components(self):
         torch.manual_seed(0)

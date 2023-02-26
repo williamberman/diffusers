@@ -25,11 +25,12 @@ from diffusers.pipelines.unclip.text_proj import UnCLIPTextProjModel
 from diffusers.utils import load_numpy, nightly, slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu, skip_mps
 
-from ...test_pipelines_common import PipelineTesterMixin, assert_mean_pixel_difference
+from ...test_pipelines_common import TEXT_TO_IMAGE_PARAMS, PipelineTesterMixin, assert_mean_pixel_difference
 
 
 class UnCLIPPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = UnCLIPPipeline
+    required_params = TEXT_TO_IMAGE_PARAMS - {"negative_prompt", "height", "width", "negative_prompt_embeds"}
     test_xformers_attention = False
 
     required_optional_params = [

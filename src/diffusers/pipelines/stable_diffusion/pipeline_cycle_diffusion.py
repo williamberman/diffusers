@@ -515,60 +515,75 @@ class CycleDiffusionPipeline(DiffusionPipeline):
 
         return timesteps, num_inference_steps - t_start
 
-    def prepare_latents(self, image, timestep, batch_size, num_images_per_prompt, dtype, device, generator=None):
-        image = image.to(device=device, dtype=dtype)
+    def prepare_latents(
+        self,
+        image,
+        timestep,
+        batch_size,
+        num_images_per_prompt,
+        dtype,
+        device,
+        generator=None,
+        latents=None,
+        clean_latents=None,
+    ):
+        if latents is None:
+            image = image.to(device=device, dtype=dtype)
 
-        batch_size = image.shape[0]
-        if isinstance(generator, list) and len(generator) != batch_size:
-            raise ValueError(
-                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
-                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
-            )
+            batch_size = image.shape[0]
+            if isinstance(generator, list) and len(generator) != batch_size:
+                raise ValueError(
+                    f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                    f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+                )
 
-        if isinstance(generator, list):
-            init_latents = [
-                self.vae.encode(image[i : i + 1]).latent_dist.sample(generator[i]) for i in range(batch_size)
-            ]
-            init_latents = torch.cat(init_latents, dim=0)
+            if isinstance(generator, list):
+                init_latents = [
+                    self.vae.encode(image[i : i + 1]).latent_dist.sample(generator[i]) for i in range(batch_size)
+                ]
+                init_latents = torch.cat(init_latents, dim=0)
+            else:
+                init_latents = self.vae.encode(image).latent_dist.sample(generator)
+
+            init_latents = self.vae.config.scaling_factor * init_latents
+
+            if batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] == 0:
+                # expand init_latents for batch_size
+                deprecation_message = (
+                    f"You have passed {batch_size} text prompts (`prompt`), but only {init_latents.shape[0]} initial"
+                    " images (`image`). Initial images are now duplicating to match the number of text prompts. Note"
+                    " that this behavior is deprecated and will be removed in a version 1.0.0. Please make sure to update"
+                    " your script to pass as many initial images as text prompts to suppress this warning."
+                )
+                deprecate("len(prompt) != len(image)", "1.0.0", deprecation_message, standard_warn=False)
+                additional_image_per_prompt = batch_size // init_latents.shape[0]
+                init_latents = torch.cat([init_latents] * additional_image_per_prompt * num_images_per_prompt, dim=0)
+            elif batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] != 0:
+                raise ValueError(
+                    f"Cannot duplicate `image` of batch size {init_latents.shape[0]} to {batch_size} text prompts."
+                )
+            else:
+                init_latents = torch.cat([init_latents] * num_images_per_prompt, dim=0)
+
+            # add noise to latents using the timestep
+            shape = init_latents.shape
+            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+
+            # get latents
+            clean_latents = init_latents
+            init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
+            latents = init_latents
         else:
-            init_latents = self.vae.encode(image).latent_dist.sample(generator)
-
-        init_latents = self.vae.config.scaling_factor * init_latents
-
-        if batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] == 0:
-            # expand init_latents for batch_size
-            deprecation_message = (
-                f"You have passed {batch_size} text prompts (`prompt`), but only {init_latents.shape[0]} initial"
-                " images (`image`). Initial images are now duplicating to match the number of text prompts. Note"
-                " that this behavior is deprecated and will be removed in a version 1.0.0. Please make sure to update"
-                " your script to pass as many initial images as text prompts to suppress this warning."
-            )
-            deprecate("len(prompt) != len(image)", "1.0.0", deprecation_message, standard_warn=False)
-            additional_image_per_prompt = batch_size // init_latents.shape[0]
-            init_latents = torch.cat([init_latents] * additional_image_per_prompt * num_images_per_prompt, dim=0)
-        elif batch_size > init_latents.shape[0] and batch_size % init_latents.shape[0] != 0:
-            raise ValueError(
-                f"Cannot duplicate `image` of batch size {init_latents.shape[0]} to {batch_size} text prompts."
-            )
-        else:
-            init_latents = torch.cat([init_latents] * num_images_per_prompt, dim=0)
-
-        # add noise to latents using the timestep
-        shape = init_latents.shape
-        noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-
-        # get latents
-        clean_latents = init_latents
-        init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
-        latents = init_latents
+            latents = latents.to(device)
+            clean_latents = clean_latents.to(device)
 
         return latents, clean_latents
 
     @torch.no_grad()
     def __call__(
         self,
-        prompt: Union[str, List[str]],
-        source_prompt: Union[str, List[str]],
+        prompt: Optional[Union[str, List[str]]] = None,
+        source_prompt: Union[str, List[str]] = None,
         image: Union[torch.FloatTensor, PIL.Image.Image] = None,
         strength: float = 0.8,
         num_inference_steps: Optional[int] = 50,
@@ -577,6 +592,8 @@ class CycleDiffusionPipeline(DiffusionPipeline):
         num_images_per_prompt: Optional[int] = 1,
         eta: Optional[float] = 0.1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        clean_latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
@@ -618,6 +635,16 @@ class CycleDiffusionPipeline(DiffusionPipeline):
             generator (`torch.Generator`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
                 to make generation deterministic.
+            latents (`torch.FloatTensor`, *optional*):
+                Pre-generated noisy latents. Sampled from a Gaussian distribution around the encoded image mean, and
+                then noised according the noising schedule. Used as inputs for image generation. Can be used to tweak
+                the same generation with different prompts. If not provided, a latents tensor will ge generated by
+                encoding `images` with `self.vae` and sampled using the supplied random `generator`.
+            clean_latents (`torch.FloatTensor`, *optional*):
+                Pre-generated noisy latents. Sampled from a Gaussian distribution around the encoded image mean, but
+                _not_ noised according the noising schedule. Used as inputs for image generation. Can be used to tweak
+                the same generation with different prompts. If not provided, a latents tensor will ge generated by
+                encoding `images` with `self.vae` and sampled using the supplied random `generator`.
             prompt_embeds (`torch.FloatTensor`, *optional*):
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
                 provided, text embeddings will be generated from `prompt` input argument.
@@ -678,7 +705,15 @@ class CycleDiffusionPipeline(DiffusionPipeline):
 
         # 6. Prepare latent variables
         latents, clean_latents = self.prepare_latents(
-            image, latent_timestep, batch_size, num_images_per_prompt, prompt_embeds.dtype, device, generator
+            image,
+            latent_timestep,
+            batch_size,
+            num_images_per_prompt,
+            prompt_embeds.dtype,
+            device,
+            generator,
+            latents,
+            clean_latents,
         )
         source_latents = latents
 

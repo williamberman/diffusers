@@ -28,7 +28,7 @@ from transformers import (
 from ...models import UNet2DConditionModel, UNet2DModel
 from ...pipelines import DiffusionPipeline, ImagePipelineOutput
 from ...schedulers import UnCLIPScheduler
-from ...utils import is_accelerate_available, logging, randn_tensor
+from ...utils import deprecate, is_accelerate_available, logging, randn_tensor
 from .text_proj import UnCLIPTextProjModel
 
 
@@ -252,9 +252,10 @@ class UnCLIPImageVariationPipeline(DiffusionPipeline):
         decoder_latents: Optional[torch.FloatTensor] = None,
         super_res_latents: Optional[torch.FloatTensor] = None,
         image_embeddings: Optional[torch.Tensor] = None,
-        decoder_guidance_scale: float = 8.0,
+        guidance_scale: Optional[float] = 8.0,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
+        **kwargs,
     ):
         """
         Function invoked when calling the pipeline for generation.
@@ -280,7 +281,7 @@ class UnCLIPImageVariationPipeline(DiffusionPipeline):
                 Pre-generated noisy latents to be used as inputs for the decoder.
             super_res_latents (`torch.FloatTensor` of shape (batch size, channels, super res height, super res width), *optional*):
                 Pre-generated noisy latents to be used as inputs for the decoder.
-            decoder_guidance_scale (`float`, *optional*, defaults to 4.0):
+            guidance_scale (`float`, *optional*, defaults to 4.0):
                 Guidance scale as defined in [Classifier-Free Diffusion Guidance](https://arxiv.org/abs/2207.12598).
                 `guidance_scale` is defined as `w` of equation 2. of [Imagen
                 Paper](https://arxiv.org/pdf/2205.11487.pdf). Guidance scale is enabled by setting `guidance_scale >
@@ -295,6 +296,10 @@ class UnCLIPImageVariationPipeline(DiffusionPipeline):
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~pipelines.ImagePipelineOutput`] instead of a plain tuple.
         """
+        message = "Please use `guidance_scale` instead of `decoder_guidance_scale`"
+        decoder_guidance_scale = deprecate("decoder_guidance_scale", "1.0.0", message, take_from=kwargs)
+        guidance_scale = decoder_guidance_scale or guidance_scale
+
         if image is not None:
             if isinstance(image, PIL.Image.Image):
                 batch_size = 1
@@ -311,7 +316,7 @@ class UnCLIPImageVariationPipeline(DiffusionPipeline):
 
         batch_size = batch_size * num_images_per_prompt
 
-        do_classifier_free_guidance = decoder_guidance_scale > 1.0
+        do_classifier_free_guidance = guidance_scale > 1.0
 
         prompt_embeds, text_encoder_hidden_states, text_mask = self._encode_prompt(
             prompt, device, num_images_per_prompt, do_classifier_free_guidance
@@ -369,7 +374,7 @@ class UnCLIPImageVariationPipeline(DiffusionPipeline):
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred_uncond, _ = noise_pred_uncond.split(latent_model_input.shape[1], dim=1)
                 noise_pred_text, predicted_variance = noise_pred_text.split(latent_model_input.shape[1], dim=1)
-                noise_pred = noise_pred_uncond + decoder_guidance_scale * (noise_pred_text - noise_pred_uncond)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                 noise_pred = torch.cat([noise_pred, predicted_variance], dim=1)
 
             if i + 1 == decoder_timesteps_tensor.shape[0]:

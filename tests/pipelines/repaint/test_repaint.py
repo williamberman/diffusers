@@ -22,7 +22,7 @@ import torch
 from diffusers import RePaintPipeline, RePaintScheduler, UNet2DModel
 from diffusers.utils.testing_utils import load_image, load_numpy, nightly, require_torch_gpu, torch_device
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import IMAGE_INPAINTING_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -30,6 +30,8 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class RepaintPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = RePaintPipeline
+    required_params = IMAGE_INPAINTING_PARAMS - {"width", "height", "guidance_scale"}
+    required_optional_params = PipelineTesterMixin.required_optional_params - {"latents", "num_images_per_prompt"}
     test_cpu_offload = False
 
     def get_dummy_components(self):

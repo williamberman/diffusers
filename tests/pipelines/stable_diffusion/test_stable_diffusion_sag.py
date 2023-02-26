@@ -29,7 +29,7 @@ from diffusers import (
 from diffusers.utils import slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import TEXT_TO_IMAGE_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -37,6 +37,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class StableDiffusionSAGPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = StableDiffusionSAGPipeline
+    required_params = TEXT_TO_IMAGE_PARAMS
     test_cpu_offload = False
 
     def get_dummy_components(self):

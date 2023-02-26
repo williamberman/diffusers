@@ -27,7 +27,7 @@ from diffusers.pipelines.paint_by_example import PaintByExampleImageEncoder
 from diffusers.utils import floats_tensor, load_image, slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import IMAGE_GUIDED_IMAGE_INPAINTING_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -35,6 +35,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class PaintByExamplePipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = PaintByExamplePipeline
+    required_params = IMAGE_GUIDED_IMAGE_INPAINTING_PARAMS
 
     def tearDown(self):
         # clean up the VRAM after each test

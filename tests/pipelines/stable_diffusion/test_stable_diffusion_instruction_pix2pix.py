@@ -34,7 +34,7 @@ from diffusers import (
 from diffusers.utils import floats_tensor, load_image, slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import TEXT_TO_IMAGE_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -42,6 +42,7 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class StableDiffusionInstructPix2PixPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = StableDiffusionInstructPix2PixPipeline
+    required_params = TEXT_TO_IMAGE_PARAMS - {"height", "width"}
 
     def get_dummy_components(self):
         torch.manual_seed(0)

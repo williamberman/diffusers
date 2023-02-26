@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 import PIL
@@ -128,7 +128,17 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def _encode_prompt(self, prompt, device, do_classifier_free_guidance, negative_prompt):
+    def _encode_prompt(
+        self,
+        prompt,
+        device,
+        do_classifier_free_guidance,
+        negative_prompt,
+        prompt_embeds=None,
+        prompt_pooler_output=None,
+        negative_prompt_embeds=None,
+        negative_prompt_pooler_output=None,
+    ):
         r"""
         Encodes the prompt into text encoder hidden states.
 
@@ -145,34 +155,39 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
         """
         batch_size = len(prompt) if isinstance(prompt, list) else 1
 
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_length=True,
-            return_tensors="pt",
-        )
-        text_input_ids = text_inputs.input_ids
-
-        untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-
-        if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(text_input_ids, untruncated_ids):
-            removed_text = self.tokenizer.batch_decode(untruncated_ids[:, self.tokenizer.model_max_length - 1 : -1])
-            logger.warning(
-                "The following part of your input was truncated because CLIP can only handle sequences up to"
-                f" {self.tokenizer.model_max_length} tokens: {removed_text}"
+        if prompt_embeds is None:
+            text_inputs = self.tokenizer(
+                prompt,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+                return_length=True,
+                return_tensors="pt",
             )
+            text_input_ids = text_inputs.input_ids
 
-        text_encoder_out = self.text_encoder(
-            text_input_ids.to(device),
-            output_hidden_states=True,
-        )
-        text_embeddings = text_encoder_out.hidden_states[-1]
-        text_pooler_out = text_encoder_out.pooler_output
+            untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
+
+            if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(
+                text_input_ids, untruncated_ids
+            ):
+                removed_text = self.tokenizer.batch_decode(
+                    untruncated_ids[:, self.tokenizer.model_max_length - 1 : -1]
+                )
+                logger.warning(
+                    "The following part of your input was truncated because CLIP can only handle sequences up to"
+                    f" {self.tokenizer.model_max_length} tokens: {removed_text}"
+                )
+
+            text_encoder_out = self.text_encoder(
+                text_input_ids.to(device),
+                output_hidden_states=True,
+            )
+            prompt_embeds = text_encoder_out.hidden_states[-1]
+            prompt_pooler_output = text_encoder_out.pooler_output
 
         # get unconditional embeddings for classifier free guidance
-        if do_classifier_free_guidance:
+        if do_classifier_free_guidance and negative_prompt_embeds is None:
             uncond_tokens: List[str]
             if negative_prompt is None:
                 uncond_tokens = [""] * batch_size
@@ -207,16 +222,17 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
                 output_hidden_states=True,
             )
 
-            uncond_embeddings = uncond_encoder_out.hidden_states[-1]
-            uncond_pooler_out = uncond_encoder_out.pooler_output
+            negative_prompt_embeds = uncond_encoder_out.hidden_states[-1]
+            negative_prompt_pooler_output = uncond_encoder_out.pooler_output
 
+        if do_classifier_free_guidance:
             # For classifier free guidance, we need to do two forward passes.
             # Here we concatenate the unconditional and text embeddings into a single batch
             # to avoid doing two forward passes
-            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
-            text_pooler_out = torch.cat([uncond_pooler_out, text_pooler_out])
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+            prompt_pooler_output = torch.cat([negative_prompt_pooler_output, prompt_pooler_output])
 
-        return text_embeddings, text_pooler_out
+        return prompt_embeds, prompt_pooler_output
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.decode_latents
     def decode_latents(self, latents):
@@ -281,17 +297,22 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
     @torch.no_grad()
     def __call__(
         self,
-        prompt: Union[str, List[str]],
-        image: Union[torch.FloatTensor, PIL.Image.Image, List[PIL.Image.Image]],
+        prompt: Optional[Union[str, List[str]]] = None,
+        image: Union[torch.FloatTensor, PIL.Image.Image, List[PIL.Image.Image]] = None,
         num_inference_steps: int = 75,
         guidance_scale: float = 9.0,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
+        prompt_embeds: Optional[torch.FloatTensor] = None,
+        prompt_pooler_output: Optional[torch.FloatTensor] = None,
+        negative_prompt_embeds: Optional[torch.FloatTensor] = None,
+        negative_prompt_pooler_output: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -326,6 +347,13 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
                 Pre-generated noisy latents, sampled from a Gaussian distribution, to be used as inputs for image
                 generation. Can be used to tweak the same generation with different prompts. If not provided, a latents
                 tensor will ge generated by sampling using the supplied random `generator`.
+            prompt_embeds (`torch.FloatTensor`, *optional*):
+                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
+                provided, text embeddings will be generated from `prompt` input argument.
+            negative_prompt_embeds (`torch.FloatTensor`, *optional*):
+                Pre-generated negative text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt
+                weighting. If not provided, negative_prompt_embeds will be generated from `negative_prompt` input
+                argument.
             output_type (`str`, *optional*, defaults to `"pil"`):
                 The output format of the generate image. Choose between
                 [PIL](https://pillow.readthedocs.io/en/stable/): `PIL.Image.Image` or `np.array`.
@@ -338,6 +366,10 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
             callback_steps (`int`, *optional*, defaults to 1):
                 The frequency at which the `callback` function will be called. If not specified, the callback will be
                 called at every step.
+            cross_attention_kwargs (`dict`, *optional*):
+                A kwargs dictionary that if specified is passed along to the `AttnProcessor` as defined under
+                `self.processor` in
+                [diffusers.cross_attention](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/cross_attention.py).
 
         Examples:
         ```py
@@ -400,7 +432,14 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
 
         # 3. Encode input prompt
         text_embeddings, text_pooler_out = self._encode_prompt(
-            prompt, device, do_classifier_free_guidance, negative_prompt
+            prompt,
+            device,
+            do_classifier_free_guidance,
+            negative_prompt,
+            prompt_embeds=prompt_embeds,
+            prompt_pooler_output=prompt_pooler_output,
+            negative_prompt_embeds=negative_prompt_embeds,
+            negative_prompt_pooler_output=negative_prompt_pooler_output,
         )
 
         # 4. Preprocess image
@@ -482,6 +521,7 @@ class StableDiffusionLatentUpscalePipeline(DiffusionPipeline):
                     timestep,
                     encoder_hidden_states=text_embeddings,
                     timestep_cond=timestep_condition,
+                    cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 
                 # in original repo, the output contains a variance channel that's not used

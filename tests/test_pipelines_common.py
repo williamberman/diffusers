@@ -27,6 +27,85 @@ from diffusers.utils.testing_utils import require_torch, torch_device
 torch.backends.cuda.matmul.allow_tf32 = False
 
 
+TEXT_TO_IMAGE_PARAMS = frozenset(
+    [
+        "prompt",
+        "height",
+        "width",
+        "guidance_scale",
+        "negative_prompt",
+        "prompt_embeds",
+        "negative_prompt_embeds",
+        "cross_attention_kwargs",
+    ]
+)
+
+IMAGE_VARIATION_PARAMS = frozenset(
+    [
+        "image",
+        "height",
+        "width",
+        "guidance_scale",
+    ]
+)
+
+TEXT_GUIDED_IMAGE_VARIATION_PARAMS = frozenset(
+    [
+        "prompt",
+        "image",
+        "height",
+        "width",
+        "guidance_scale",
+        "negative_prompt",
+        "prompt_embeds",
+        "negative_prompt_embeds",
+    ]
+)
+
+TEXT_GUIDED_IMAGE_INPAINTING_PARAMS = frozenset(
+    [
+        # Text guided image variation with an image mask
+        "prompt",
+        "image",
+        "mask_image",
+        "height",
+        "width",
+        "guidance_scale",
+        "negative_prompt",
+        "prompt_embeds",
+        "negative_prompt_embeds",
+    ]
+)
+
+IMAGE_INPAINTING_PARAMS = frozenset(
+    [
+        # image variation with an image mask
+        "image",
+        "mask_image",
+        "height",
+        "width",
+        "guidance_scale",
+    ]
+)
+
+IMAGE_GUIDED_IMAGE_INPAINTING_PARAMS = frozenset(
+    [
+        "example_image",
+        "image",
+        "mask_image",
+        "height",
+        "width",
+        "guidance_scale",
+    ]
+)
+
+CLASS_CONDITIONED_IMAGE_GENERATION_PARAMS = frozenset(["class_labels"])
+
+UNCONDITIONAL_IMAGE_GENERATION_PARAMS = frozenset(["batch_size"])
+
+UNCONDITIONAL_AUDIO_GENERATION_PARAMS = frozenset(["batch_size"])
+
+
 @require_torch
 class PipelineTesterMixin:
     """
@@ -35,16 +114,20 @@ class PipelineTesterMixin:
     equivalence of dict and tuple outputs, etc.
     """
 
-    allowed_required_args = [
-        "source_prompt",
-        "prompt",
-        "image",
-        "mask_image",
-        "example_image",
-        "class_labels",
-        "token_indices",
-    ]
-    required_optional_params = ["generator", "num_inference_steps", "return_dict"]
+    required_optional_params = frozenset(
+        [
+            "num_inference_steps",
+            "num_images_per_prompt",
+            "eta",
+            "generator",
+            "latents",
+            "output_type",
+            "return_dict",
+            "callback",
+            "callback_steps",
+        ]
+    )
+
     num_inference_steps_args = ["num_inference_steps"]
 
     # set these parameters to False in the child class if the pipeline does not support the corresponding functionality
@@ -61,6 +144,17 @@ class PipelineTesterMixin:
     def pipeline_class(self) -> Union[Callable, DiffusionPipeline]:
         raise NotImplementedError(
             "You need to set the attribute `pipeline_class = ClassNameOfPipeline` in the child test class. "
+            "See existing pipeline tests for reference."
+        )
+
+    @property
+    def required_params(self) -> frozenset:
+        raise NotImplementedError(
+            "You need to set the attribute `required_params` in the child test class. "
+            "`test_pipelines_common.py` provides some common sets of arguments such as `TEXT_TO_IMAGE_PARAMS`, `IMAGE_VARIATION_PARMS`, etc... "
+            "If your pipeline's set of arguments has minor changes from one of the common sets of arguments, do not make modifications to the "
+            "existing common sets of arguments. I.e. a text to image pipeline with non-configurable height and width arguments should set the attribute as "
+            "`required_params = TEXT_TO_IMAGE_PARAMS - {'height', 'width'}`. "
             "See existing pipeline tests for reference."
         )
 
@@ -117,23 +211,43 @@ class PipelineTesterMixin:
         self.assertLess(max_diff, 1e-4)
 
     def test_pipeline_call_implements_required_args(self):
-        assert hasattr(self.pipeline_class, "__call__"), f"{self.pipeline_class} should have a `__call__` method"
+        self.assertTrue(
+            hasattr(self.pipeline_class, "__call__"), f"{self.pipeline_class} should have a `__call__` method"
+        )
+
         parameters = inspect.signature(self.pipeline_class.__call__).parameters
-        required_parameters = {k: v for k, v in parameters.items() if v.default == inspect._empty}
-        required_parameters.pop("self")
-        required_parameters = set(required_parameters)
-        optional_parameters = set({k for k, v in parameters.items() if v.default != inspect._empty})
 
-        for param in required_parameters:
-            if param == "kwargs":
-                # kwargs can be added if arguments of pipeline call function are deprecated
-                continue
-            assert param in self.allowed_required_args
+        optional_parameters = set()
 
-        optional_parameters = set({k for k, v in parameters.items() if v.default != inspect._empty})
+        for k, v in parameters.items():
+            if v.default != inspect._empty:
+                optional_parameters.add(k)
+
+        parameters = set(parameters.keys())
+        parameters.remove("self")
+        parameters.discard("kwargs")  # kwargs can be added if arguments of pipeline call function are deprecated
+
+        remaining_required_parameters = set()
+
+        for param in self.required_params:
+            if param not in parameters:
+                remaining_required_parameters.add(param)
+
+        self.assertTrue(
+            len(remaining_required_parameters) == 0,
+            f"Required parameters not present: {remaining_required_parameters}",
+        )
+
+        remaining_required_optional_parameters = set()
 
         for param in self.required_optional_params:
-            assert param in optional_parameters
+            if param not in optional_parameters:
+                remaining_required_optional_parameters.add(param)
+
+        self.assertTrue(
+            len(remaining_required_optional_parameters) == 0,
+            f"Required optional parameters not present: {remaining_required_optional_parameters}",
+        )
 
     def test_inference_batch_consistent(self):
         self._test_inference_batch_consistent()

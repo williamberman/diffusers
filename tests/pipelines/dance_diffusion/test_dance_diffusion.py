@@ -23,7 +23,7 @@ from diffusers import DanceDiffusionPipeline, IPNDMScheduler, UNet1DModel
 from diffusers.utils import slow, torch_device
 from diffusers.utils.testing_utils import require_torch_gpu
 
-from ...test_pipelines_common import PipelineTesterMixin
+from ...test_pipelines_common import UNCONDITIONAL_AUDIO_GENERATION_PARAMS, PipelineTesterMixin
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -31,6 +31,15 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 class DanceDiffusionPipelineFastTests(PipelineTesterMixin, unittest.TestCase):
     pipeline_class = DanceDiffusionPipeline
+    required_params = UNCONDITIONAL_AUDIO_GENERATION_PARAMS
+    required_optional_params = PipelineTesterMixin.required_optional_params - {
+        "callback",
+        "latents",
+        "callback_steps",
+        "output_type",
+        "eta",
+        "num_images_per_prompt",
+    }
     test_attention_slicing = False
     test_cpu_offload = False
 
