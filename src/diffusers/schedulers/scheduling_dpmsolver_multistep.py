@@ -208,9 +208,7 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
 
         self.num_inference_steps = len(timesteps)
 
-        self.model_outputs = [
-            None,
-        ] * self.config.solver_order
+        self.model_outputs = [None] * self.config.solver_order
         self.lower_order_nums = 0
 
     # Copied from diffusers.schedulers.scheduling_ddpm.DDPMScheduler._threshold_sample
