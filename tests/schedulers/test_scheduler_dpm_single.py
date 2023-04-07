@@ -195,6 +195,15 @@ class DPMSolverSinglestepSchedulerTest(SchedulerCommonTest):
 
         assert abs(result_mean.item() - 0.1453) < 1e-3
 
+    def test_unique_timesteps(self, **config):
+        for scheduler_class in self.scheduler_classes:
+            scheduler_config = self.get_scheduler_config(**config)
+            scheduler = scheduler_class(**scheduler_config)
+
+            if hasattr(scheduler, "set_timesteps"):
+                scheduler.set_timesteps(1000)
+                assert len(scheduler.timesteps.unique()) == scheduler.num_inference_steps
+
     def test_fp16_support(self):
         scheduler_class = self.scheduler_classes[0]
         scheduler_config = self.get_scheduler_config(thresholding=True, dynamic_thresholding_ratio=0)

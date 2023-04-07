@@ -160,6 +160,15 @@ class UniPCMultistepSchedulerTest(SchedulerCommonTest):
         for timesteps in [25, 50, 100, 999, 1000]:
             self.check_over_configs(num_train_timesteps=timesteps)
 
+    def test_unique_timesteps(self, **config):
+        for scheduler_class in self.scheduler_classes:
+            scheduler_config = self.get_scheduler_config(**config)
+            scheduler = scheduler_class(**scheduler_config)
+
+            if hasattr(scheduler, "set_timesteps"):
+                scheduler.set_timesteps(1000)
+                assert len(scheduler.timesteps.unique()) == scheduler.num_inference_steps
+
     def test_thresholding(self):
         self.check_over_configs(thresholding=False)
         for order in [1, 2, 3]:
