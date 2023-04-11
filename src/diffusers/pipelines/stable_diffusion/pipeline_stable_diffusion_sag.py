@@ -63,7 +63,10 @@ class CrossAttnStoreProcessor:
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
         query = attn.to_q(hidden_states)
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)

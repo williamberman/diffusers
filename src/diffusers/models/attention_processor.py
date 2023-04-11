@@ -324,10 +324,7 @@ class Attention(nn.Module):
             attention_mask = attention_mask.repeat_interleave(head_size, dim=0)
         return attention_mask
 
-    def prepare_encoder_hidden_states(self, hidden_states, encoder_hidden_states=None):
-        if encoder_hidden_states is None:
-            return hidden_states
-
+    def norm_encoder_hidden_states(self, encoder_hidden_states):
         if self.norm_cross is None:
             return encoder_hidden_states
 
@@ -362,7 +359,10 @@ class AttnProcessor:
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
         query = attn.to_q(hidden_states)
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
@@ -428,7 +428,10 @@ class LoRAAttnProcessor(nn.Module):
         query = attn.to_q(hidden_states) + scale * self.to_q_lora(hidden_states)
         query = attn.head_to_batch_dim(query)
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states) + scale * self.to_k_lora(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states) + scale * self.to_v_lora(encoder_hidden_states)
@@ -455,7 +458,11 @@ class AttnAddedKVProcessor:
         batch_size, sequence_length, _ = hidden_states.shape
 
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
@@ -506,7 +513,10 @@ class XFormersAttnProcessor:
 
         query = attn.to_q(hidden_states)
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
@@ -547,7 +557,10 @@ class AttnProcessor2_0:
 
         query = attn.to_q(hidden_states)
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
@@ -596,7 +609,10 @@ class LoRAXFormersAttnProcessor(nn.Module):
         query = attn.to_q(hidden_states) + scale * self.to_q_lora(hidden_states)
         query = attn.head_to_batch_dim(query).contiguous()
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states) + scale * self.to_k_lora(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states) + scale * self.to_v_lora(encoder_hidden_states)
@@ -631,7 +647,10 @@ class SlicedAttnProcessor:
         dim = query.shape[-1]
         query = attn.head_to_batch_dim(query)
 
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         key = attn.to_k(encoder_hidden_states)
         value = attn.to_v(encoder_hidden_states)
@@ -678,7 +697,11 @@ class SlicedAttnAddedKVProcessor:
         batch_size, sequence_length, _ = hidden_states.shape
 
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
-        encoder_hidden_states = attn.prepare_encoder_hidden_states(hidden_states, encoder_hidden_states)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        else:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
         hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
