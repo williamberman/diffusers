@@ -38,17 +38,10 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTokenizer, T5EncoderModel, T5Tokenizer
 
 import diffusers
-from diffusers import (
-    AutoencoderKL,
-    DDPMScheduler,
-    DiffusionPipeline,
-    DPMSolverMultistepScheduler,
-    StableDiffusionPipeline,
-    UNet2DConditionModel,
-)
+from diffusers import DDPMScheduler, DiffusionPipeline, DPMSolverMultistepScheduler, IFPipeline, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
@@ -110,7 +103,7 @@ These are textual inversion adaption weights for {base_model}. You can find some
         f.write(yaml + model_card)
 
 
-def log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight_dtype, epoch):
+def log_validation(text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
         f" {args.validation_prompt}."
@@ -121,12 +114,14 @@ def log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight
         text_encoder=accelerator.unwrap_model(text_encoder),
         tokenizer=tokenizer,
         unet=unet,
-        vae=vae,
+        # vae=vae,
         safety_checker=None,
         revision=args.revision,
         torch_dtype=weight_dtype,
     )
-    pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
+    pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
+        pipeline.scheduler.config, variance_type="fixed_small"
+    )
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -135,7 +130,9 @@ def log_validation(text_encoder, tokenizer, unet, vae, args, accelerator, weight
     images = []
     for _ in range(args.num_validation_images):
         with torch.autocast("cuda"):
-            image = pipeline(args.validation_prompt, num_inference_steps=25, generator=generator).images[0]
+            image = pipeline(
+                args.validation_prompt, num_inference_steps=25, generator=generator, clean_caption=False
+            ).images[0]
         images.append(image)
 
     for tracker in accelerator.trackers:
@@ -524,13 +521,16 @@ class TextualInversionDataset(Dataset):
         placeholder_string = self.placeholder_token
         text = random.choice(self.templates).format(placeholder_string)
 
-        example["input_ids"] = self.tokenizer(
+        text_inputs = self.tokenizer(
             text,
             padding="max_length",
             truncation=True,
-            max_length=self.tokenizer.model_max_length,
+            max_length=77,
             return_tensors="pt",
-        ).input_ids[0]
+        ).input_ids
+
+        example["input_ids"] = text_inputs[0]
+        example["attention_mask"] = text_inputs[1]
 
         # default to score-sde preprocessing
         img = np.array(image).astype(np.uint8)
@@ -607,14 +607,14 @@ def main():
     if args.tokenizer_name:
         tokenizer = CLIPTokenizer.from_pretrained(args.tokenizer_name)
     elif args.pretrained_model_name_or_path:
-        tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
+        tokenizer = T5Tokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
 
     # Load scheduler and models
     noise_scheduler = DDPMScheduler.from_pretrained(args.pretrained_model_name_or_path, subfolder="scheduler")
-    text_encoder = CLIPTextModel.from_pretrained(
+    text_encoder = T5EncoderModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision
     )
-    vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
+    # vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision)
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
     )
@@ -657,12 +657,14 @@ def main():
             token_embeds[token_id] = token_embeds[initializer_token_id].clone()
 
     # Freeze vae and unet
-    vae.requires_grad_(False)
+    # vae.requires_grad_(False)
     unet.requires_grad_(False)
     # Freeze all parameters except for the token embeddings in text encoder
-    text_encoder.text_model.encoder.requires_grad_(False)
-    text_encoder.text_model.final_layer_norm.requires_grad_(False)
-    text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+    # text_encoder.text_model.encoder.requires_grad_(False)
+    # text_encoder.text_model.final_layer_norm.requires_grad_(False)
+    # text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+    text_encoder.encoder.requires_grad_(False)
+    text_encoder.encoder.embed_tokens.requires_grad_(True)
 
     if args.gradient_checkpointing:
         # Keep unet in train mode if we are using gradient checkpointing to save memory.
@@ -756,7 +758,7 @@ def main():
 
     # Move vae and unet to device and cast to weight_dtype
     unet.to(accelerator.device, dtype=weight_dtype)
-    vae.to(accelerator.device, dtype=weight_dtype)
+    # vae.to(accelerator.device, dtype=weight_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -825,8 +827,9 @@ def main():
 
             with accelerator.accumulate(text_encoder):
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample().detach()
-                latents = latents * vae.config.scaling_factor
+                # latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample().detach()
+                # latents = latents * vae.config.scaling_factor
+                latents = batch["pixel_values"].to(dtype=weight_dtype)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -839,11 +842,17 @@ def main():
                 # (this is the forward diffusion process)
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
+                input_ids = batch["input_ids"]
+                attention_mask = batch["attention_mask"]
+
                 # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"])[0].to(dtype=weight_dtype)
+                encoder_hidden_states = text_encoder(input_ids, attention_mask)[0].to(dtype=weight_dtype)
 
                 # Predict the noise residual
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+
+                if model_pred.shape[1] == 6:
+                    model_pred, _ = model_pred.chunk(2, dim=1)
 
                 # Get the target for loss depending on the prediction type
                 if noise_scheduler.config.prediction_type == "epsilon":
@@ -886,9 +895,7 @@ def main():
                         logger.info(f"Saved state to {save_path}")
 
                     if args.validation_prompt is not None and global_step % args.validation_steps == 0:
-                        images = log_validation(
-                            text_encoder, tokenizer, unet, vae, args, accelerator, weight_dtype, epoch
-                        )
+                        images = log_validation(text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch)
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -905,13 +912,13 @@ def main():
         else:
             save_full_model = args.save_as_full_pipeline
         if save_full_model:
-            pipeline = StableDiffusionPipeline.from_pretrained(
+            pipeline = IFPipeline.from_pretrained(
                 args.pretrained_model_name_or_path,
                 text_encoder=accelerator.unwrap_model(text_encoder),
-                vae=vae,
                 unet=unet,
                 tokenizer=tokenizer,
             )
+            pipeline.scheduler = DDPMScheduler.from_config(pipeline.scheduler.config, variance_type="fixed_small")
             pipeline.save_pretrained(args.output_dir)
         # Save the newly trained embeddings
         save_path = os.path.join(args.output_dir, "learned_embeds.bin")
