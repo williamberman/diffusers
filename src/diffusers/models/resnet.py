@@ -601,6 +601,90 @@ class ResnetBlock2D(nn.Module):
         return output_tensor
 
 
+class ResnetBlock2DDefaultTimeEmbeddings(nn.Module):
+    def __init__(
+        self,
+        norm1,
+        nonlinearity,
+        conv1,
+        time_emb_proj,
+        skip_time_act,
+        dropout,
+        conv2,
+        conv_shortcut,
+        output_scale_factor,
+        upsample,
+        downsample,
+    ):
+        super().__init__()
+        self.norm1 = norm1
+        self.nonlinearity = nonlinearity
+        self.conv1 = conv1
+        self.time_emb_proj = time_emb_proj
+        self.skip_time_act = skip_time_act
+        self.dropout = dropout
+        self.conv2 = conv2
+        self.conv_shortcut = conv_shortcut
+        self.output_scale_factor = output_scale_factor
+        self.upsample = upsample
+        self.downsample = downsample
+
+    def forward(self, input_tensor, temb):
+        hidden_states = input_tensor
+
+        hidden_states = self.norm1(hidden_states)
+
+        hidden_states = self.nonlinearity(hidden_states)
+
+        if self.upsample is not None:
+            # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
+            if hidden_states.shape[0] >= 64:
+                input_tensor = input_tensor.contiguous()
+                hidden_states = hidden_states.contiguous()
+            input_tensor = self.upsample(input_tensor)
+            hidden_states = self.upsample(hidden_states)
+        elif self.downsample is not None:
+            input_tensor = self.downsample(input_tensor)
+            hidden_states = self.downsample(hidden_states)
+
+        hidden_states = self.conv1(hidden_states)
+
+        if self.time_emb_proj is not None:
+            if not self.skip_time_act:
+                temb = self.nonlinearity(temb)
+            temb = self.time_emb_proj(temb)
+            temb = temb[:, :, None, None]
+
+            hidden_states = hidden_states + temb
+
+        hidden_states = self.nonlinearity(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.conv2(hidden_states)
+
+        if self.conv_shortcut is not None:
+            input_tensor = self.conv_shortcut(input_tensor)
+
+        output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
+
+        return output_tensor
+
+
+class ResnetBlock2DAdaGroupNorm(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input_tensor, temb):
+        ...
+
+
+class ResnetBlock2DScaleShiftNorm(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input_tensor, temb):
+        ...
+
+
 class Mish(torch.nn.Module):
     def forward(self, hidden_states):
         return hidden_states * torch.tanh(torch.nn.functional.softplus(hidden_states))
