@@ -1117,8 +1117,12 @@ def main(args):
             # Skip steps until we reach the resumed step
             if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
                 if step % args.gradient_accumulation_steps == 0:
-                    progress_bar.update(1)
+                    # progress_bar.update(1)
+                    ...
                 continue
+
+            lora_weight_sum = unet.down_blocks[0].attentions[0].transformer_blocks[0].attn1.processor.to_q_lora.down.weight.abs().sum()
+            print(f"global_step: {global_step}, device: {unet.device}, lora_weight_sum: {lora_weight_sum}")
 
             with accelerator.accumulate(unet):
                 pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
@@ -1211,7 +1215,7 @@ def main(args):
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                progress_bar.update(1)
+                # progress_bar.update(1)
                 global_step += 1
 
                 if accelerator.is_main_process:
@@ -1241,7 +1245,7 @@ def main(args):
                         logger.info(f"Saved state to {save_path}")
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
+            # progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
