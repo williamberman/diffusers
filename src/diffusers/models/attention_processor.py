@@ -1271,6 +1271,7 @@ class LoRAAttnProcessor2_0(nn.Module):
         self.to_out_lora = LoRALinearLayer(hidden_size, hidden_size, rank, network_alpha)
 
     def __call__(self, attn: Attention, hidden_states, encoder_hidden_states=None, attention_mask=None, scale=1.0):
+        print(torch.is_autocast_enabled())
         residual = hidden_states
 
         input_ndim = hidden_states.ndim
