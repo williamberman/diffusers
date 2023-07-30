@@ -302,6 +302,14 @@ except importlib_metadata.PackageNotFoundError:
     _invisible_watermark_available = False
 
 
+_webdataset_available = importlib.util.find_spec("webdataset") is not None
+try:
+    _webdataset_version = importlib_metadata.version("webdataset")
+    logger.debug(f"Successfully imported webdataset version {_webdataset_version}")
+except importlib_metadata.PackageNotFoundError:
+    _webdataset_available = False
+
+
 def is_torch_available():
     return _torch_available
 
@@ -392,6 +400,10 @@ def is_torchsde_available():
 
 def is_invisible_watermark_available():
     return _invisible_watermark_available
+
+
+def is_webdataset_available():
+    return _webdataset_available
 
 
 # docstyle-ignore
