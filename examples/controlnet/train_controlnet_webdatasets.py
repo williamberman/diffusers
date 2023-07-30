@@ -15,40 +15,29 @@
 import argparse
 import functools
 import gc
-import itertools
 import logging
 import math
 import os
 import random
 import shutil
 from pathlib import Path
-from typing import List, Union
 
 import accelerate
-import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers
-import webdataset as wds
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
-from braceexpand import braceexpand
+from data import make_wds_canny_controlnet_dataset
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
-from torch.utils.data import default_collate
-from torchvision import transforms
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
-from webdataset.tariterators import (
-    base_plus_ext,
-    tar_file_expander,
-    url_opener,
-    valid_sample,
-)
 
 import diffusers
 from diffusers import (
@@ -64,8 +53,6 @@ from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
 
-MAX_SEQ_LENGTH = 77
-
 if is_wandb_available():
     import wandb
 
@@ -73,200 +60,6 @@ if is_wandb_available():
 check_min_version("0.18.0.dev0")
 
 logger = get_logger(__name__)
-
-
-def filter_keys(key_set):
-    def _f(dictionary):
-        return {k: v for k, v in dictionary.items() if k in key_set}
-
-    return _f
-
-
-def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
-    """Return function over iterator that groups key, value pairs into samples.
-
-    :param keys: function that splits the key into key and extension (base_plus_ext)
-    :param lcase: convert suffixes to lower case (Default value = True)
-    """
-    current_sample = None
-    for filesample in data:
-        assert isinstance(filesample, dict)
-        fname, value = filesample["fname"], filesample["data"]
-        prefix, suffix = keys(fname)
-        if prefix is None:
-            continue
-        if lcase:
-            suffix = suffix.lower()
-        # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
-        #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
-        #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
-        if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
-            if valid_sample(current_sample):
-                yield current_sample
-            current_sample = {"__key__": prefix, "__url__": filesample["__url__"]}
-        if suffixes is None or suffix in suffixes:
-            current_sample[suffix] = value
-    if valid_sample(current_sample):
-        yield current_sample
-
-
-def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
-    # NOTE this is a re-impl of the webdataset impl with group_by_keys that doesn't throw
-    streams = url_opener(src, handler=handler)
-    files = tar_file_expander(streams, handler=handler)
-    samples = group_by_keys_nothrow(files, handler=handler)
-    return samples
-
-
-def control_transform(image):
-    image = np.array(image)
-
-    low_threshold = 100
-    high_threshold = 200
-
-    image = cv2.Canny(image, low_threshold, high_threshold)
-    image = image[:, :, None]
-    image = np.concatenate([image, image, image], axis=2)
-    control_image = Image.fromarray(image)
-    return control_image
-
-
-class ImageNetTransform:
-    def __init__(self, resolution, center_crop=True, random_flip=False):
-        self.train_transform = transforms.Compose(
-            [
-                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(resolution),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-        self.train_control_transform = transforms.Compose(
-            [
-                control_transform,
-                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(resolution),
-                transforms.ToTensor(),
-            ]
-        )
-        self.eval_transform = transforms.Compose(
-            [
-                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(resolution),
-                transforms.ToTensor(),
-            ]
-        )
-
-
-class Text2ImageDataset:
-    def __init__(
-        self,
-        train_shards_path_or_url: Union[str, List[str]],
-        eval_shards_path_or_url: Union[str, List[str]],
-        num_train_examples: int,
-        per_gpu_batch_size: int,
-        global_batch_size: int,
-        num_workers: int,
-        resolution: int = 256,
-        center_crop: bool = True,
-        random_flip: bool = False,
-        shuffle_buffer_size: int = 1000,
-        pin_memory: bool = False,
-        persistent_workers: bool = False,
-    ):
-        transform = ImageNetTransform(resolution, center_crop, random_flip)
-
-        if not isinstance(train_shards_path_or_url, str):
-            train_shards_path_or_url = [list(braceexpand(urls)) for urls in train_shards_path_or_url]
-            # flatten list using itertools
-            train_shards_path_or_url = list(itertools.chain.from_iterable(train_shards_path_or_url))
-
-        if not isinstance(eval_shards_path_or_url, str):
-            eval_shards_path_or_url = [list(braceexpand(urls)) for urls in eval_shards_path_or_url]
-            # flatten list using itertools
-            eval_shards_path_or_url = list(itertools.chain.from_iterable(eval_shards_path_or_url))
-
-        def get_orig_size(json):
-            return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
-
-        processing_pipeline = [
-            wds.decode("pil", handler=wds.ignore_and_continue),
-            wds.rename(
-                image="jpg;png;jpeg;webp",
-                control_image="jpg;png;jpeg;webp",
-                text="text;txt;caption",
-                orig_size="json",
-                handler=wds.warn_and_continue,
-            ),
-            wds.map(filter_keys({"image", "control_image", "text", "orig_size"})),
-            wds.map_dict(
-                image=transform.train_transform,
-                control_image=transform.train_control_transform,
-                orig_size=get_orig_size,
-            ),
-            wds.to_tuple("image", "control_image", "text", "orig_size"),
-        ]
-
-        # Create train dataset and loader
-        pipeline = [
-            wds.ResampledShards(train_shards_path_or_url),
-            tarfile_to_samples_nothrow,
-            wds.shuffle(shuffle_buffer_size),
-            *processing_pipeline,
-            wds.batched(per_gpu_batch_size, partial=False, collation_fn=default_collate),
-        ]
-
-        num_worker_batches = math.ceil(num_train_examples / (global_batch_size * num_workers))  # per dataloader worker
-        num_batches = num_worker_batches * num_workers
-        num_samples = num_batches * global_batch_size
-
-        # each worker is iterating over this
-        self._train_dataset = wds.DataPipeline(*pipeline).with_epoch(num_worker_batches)
-        self._train_dataloader = wds.WebLoader(
-            self._train_dataset,
-            batch_size=None,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-        )
-        # add meta-data to dataloader instance for convenience
-        self._train_dataloader.num_batches = num_batches
-        self._train_dataloader.num_samples = num_samples
-
-        # Create eval dataset and loader
-        pipeline = [
-            wds.SimpleShardList(eval_shards_path_or_url),
-            wds.split_by_worker,
-            wds.tarfile_to_samples(handler=wds.ignore_and_continue),
-            *processing_pipeline,
-            wds.batched(per_gpu_batch_size, partial=False, collation_fn=default_collate),
-        ]
-        self._eval_dataset = wds.DataPipeline(*pipeline)
-        self._eval_dataloader = wds.WebLoader(
-            self._eval_dataset,
-            batch_size=None,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-        )
-
-    @property
-    def train_dataset(self):
-        return self._train_dataset
-
-    @property
-    def train_dataloader(self):
-        return self._train_dataloader
-
-    @property
-    def eval_dataset(self):
-        return self._eval_dataset
-
-    @property
-    def eval_dataloader(self):
-        return self._eval_dataloader
 
 
 def image_grid(imgs, rows, cols):
@@ -1069,21 +862,26 @@ def main(args):
 
         return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
 
-    dataset = Text2ImageDataset(
+    train_dataset = make_wds_canny_controlnet_dataset(
         train_shards_path_or_url=args.train_shards_path_or_url,
-        eval_shards_path_or_url=args.eval_shards_path_or_url,
-        num_train_examples=args.max_train_samples,
         per_gpu_batch_size=args.train_batch_size,
-        global_batch_size=args.train_batch_size * accelerator.num_processes,
-        num_workers=args.dataloader_num_workers,
         resolution=args.resolution,
-        center_crop=False,
-        random_flip=False,
-        shuffle_buffer_size=1000,
+    )
+
+    num_worker_batches = math.ceil(
+        args.num_train_examples / (args.train_batch_size * accelerator.num_processes * args.dataloader_num_workers)
+    )  # per dataloader worker
+
+    train_dataset = train_dataset.with_epoch(num_worker_batches)
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=None,
+        shuffle=False,
+        num_workers=args.dataloader_num_workers,
         pin_memory=True,
         persistent_workers=True,
     )
-    train_dataloader = dataset.train_dataloader
 
     # Let's first compute all the embeddings so that we can free up the text encoders
     # from memory.
@@ -1099,7 +897,7 @@ def main(args):
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(train_dataloader.num_batches / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(num_worker_batches / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -1117,7 +915,7 @@ def main(args):
     controlnet, optimizer, lr_scheduler = accelerator.prepare(controlnet, optimizer, lr_scheduler)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(train_dataloader.num_batches / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(num_worker_batches / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
