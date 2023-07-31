@@ -20,7 +20,6 @@ import math
 import os
 import random
 import shutil
-from contextlib import nullcontext
 from pathlib import Path
 
 import accelerate
@@ -136,7 +135,7 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step)
         images = []
 
         for _ in range(args.num_validation_images):
-            with nullcontext() if args.validation_disable_autocast else torch.autocast("cuda"):
+            with torch.autocast("cuda"):
                 image = pipeline(
                     prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
                 ).images[0]
@@ -593,11 +592,6 @@ def parse_args(input_args=None):
         type=str,
         choices=["fp32"],
         help="Force the VAE to use a certain dtype. SDXL VAE's have a tendency to cause nan losses when loaded in fp16.",
-    )
-    parser.add_argument(
-        "--validation_disable_autocast",
-        action="store_true",
-        help="Set to disable autocast when producing validation images. Some pipeline setups produce black images when autocast is enabled.",
     )
 
     if input_args is not None:
@@ -1311,13 +1305,7 @@ def main(args):
             with accelerator.accumulate(controlnet):
                 # latents
                 pixel_values = batch["pixel_values"]
-
-                if args.pretrained_vae_model_name_or_path is not None:
-                    pixel_values_dtype = weight_dtype
-                else:
-                    pixel_values_dtype = None
-
-                pixel_values = pixel_values.to(accelerator.device, dtype=pixel_values_dtype, non_blocking=True)
+                pixel_values = pixel_values.to(accelerator.device, dtype=vae_dtype, non_blocking=True)
 
                 latents = vae.encode(pixel_values).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
@@ -1376,9 +1364,13 @@ def main(args):
                     return_dict=False,
                 )
 
+                # regardless of the dtype of the latents passed to the controlnet, the
+                # latents passed to the unet must be in the dtype the weights are held in
+                unet_noisy_latents = noisy_latents.to(weight_dtype)
+
                 # Predict the noise residual
                 model_pred = unet(
-                    noisy_latents,
+                    unet_noisy_latents,
                     timesteps,
                     encoder_hidden_states=prompt_embeds,
                     added_cond_kwargs={"text_embeds": text_embeds, "time_ids": time_ids_},
