@@ -33,6 +33,7 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from datasets import load_dataset
+from datasets.fingerprint import Hasher
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
@@ -709,8 +710,38 @@ def make_wds_canny_controlnet_dataset(
     resolution: int = 256,
     shuffle_buffer_size: int = 1000,
 ):
-    def get_orig_size(json):
-        return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
+    def mapper(d):
+        pixel_values = transforms.Compose(
+            [
+                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(resolution),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )(d["image"])
+
+        conditioning_pixel_values = transforms.Compose(
+            [
+                control_transform,
+                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(resolution),
+                transforms.ToTensor(),
+            ]
+        )(d["control_image"])
+
+        metadata = d["metadata"]
+        original_width = int(metadata.get("original_width", 0.0))
+        original_height = int(metadata.get("original_height", 0.0))
+        orig_size = torch.tensor([original_width, original_height])
+
+        text = d["text"]
+
+        return {
+            "pixel_values": pixel_values,
+            "conditioning_pixel_values": conditioning_pixel_values,
+            "orig_size": orig_size,
+            "text": text,
+        }
 
     pipeline = [
         wds.ResampledShards(train_shards_path_or_url),
@@ -721,37 +752,10 @@ def make_wds_canny_controlnet_dataset(
             image="jpg;png;jpeg;webp",
             control_image="jpg;png;jpeg;webp",
             text="text;txt;caption",
-            orig_size="json",
+            metadata="json",
             handler=wds.warn_and_continue,
         ),
-        wds.map(
-            lambda d: {
-                "image": d["image"],
-                "control_image": d["control_image"],
-                "text": d["text"],
-                "orig_size": d["orig_size"],
-            }
-        ),
-        wds.map_dict(
-            image=transforms.Compose(
-                [
-                    transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                    transforms.CenterCrop(resolution),
-                    transforms.ToTensor(),
-                    transforms.Normalize([0.5], [0.5]),
-                ]
-            ),
-            control_image=transforms.Compose(
-                [
-                    control_transform,
-                    transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                    transforms.CenterCrop(resolution),
-                    transforms.ToTensor(),
-                ]
-            ),
-            orig_size=get_orig_size,
-        ),
-        wds.to_tuple("image", "control_image", "text", "orig_size"),
+        wds.map(mapper),
         wds.batched(per_gpu_batch_size, partial=False, collation_fn=default_collate),
     ]
 
@@ -896,13 +900,12 @@ def collate_fn(examples):
     prompt_ids = torch.stack([torch.tensor(example["prompt_embeds"]) for example in examples])
 
     add_text_embeds = torch.stack([torch.tensor(example["text_embeds"]) for example in examples])
-    add_time_ids = torch.stack([torch.tensor(example["time_ids"]) for example in examples])
 
     return {
         "pixel_values": pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
         "prompt_ids": prompt_ids,
-        "unet_added_conditions": {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
+        "text_embeds": add_text_embeds,
     }
 
 
@@ -1120,30 +1123,16 @@ def main(args):
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
 
-    # Here, we compute not just the text embeddings but also the additional embeddings
-    # needed for the SD XL UNet to operate.
-    def compute_embeddings(prompt_batch, original_sizes):
-        original_sizes = list(map(list, zip(*original_sizes)))
-        target_size = (args.resolution, args.resolution)
-        crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
-
+    def compute_text_embeddings(prompt_batch):
         prompt_embeds, pooled_prompt_embeds = encode_prompt(
             prompt_batch, text_encoders, tokenizers, args.proportion_empty_prompts, is_train=True
         )
         add_text_embeds = pooled_prompt_embeds
 
-        # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-        add_time_ids = list(crops_coords_top_left + target_size)
-        add_time_ids = torch.tensor([add_time_ids])
-        add_time_ids = add_time_ids.repeat(len(prompt_batch), 1)
-        add_time_ids = torch.cat([torch.tensor(original_sizes, dtype=torch.long), add_time_ids], dim=-1)
-        add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
+        prompt_embeds = prompt_embeds.to("cpu")
+        add_text_embeds = add_text_embeds.to("cpu")
 
-        prompt_embeds = prompt_embeds.to(accelerator.device)
-        add_text_embeds = add_text_embeds.to(accelerator.device)
-        unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-
-        return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
+        return {"prompt_embeds": prompt_embeds, "text_embeds": add_text_embeds}
 
     # Let's first compute all the embeddings so that we can free up the text encoders
     # from memory.
@@ -1154,12 +1143,10 @@ def main(args):
         train_dataset = get_train_dataset(args, accelerator)
 
         with accelerator.main_process_first():
-            from datasets.fingerprint import Hasher
-
             # fingerprint used by the cache for the other processes to load the result
             # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
             new_fingerprint = Hasher.hash(args)
-            train_dataset = train_dataset.map(compute_embeddings, batched=True, new_fingerprint=new_fingerprint)
+            train_dataset = train_dataset.map(compute_text_embeddings, batched=True, new_fingerprint=new_fingerprint)
 
         del text_encoders, tokenizers
         gc.collect()
@@ -1179,6 +1166,18 @@ def main(args):
         )
 
         num_batches_per_epoch = len(train_dataloader)
+
+        time_ids = torch.tensor(
+            [
+                args.resolution,
+                args.resolution,
+                args.resolution,
+                args.resolution,
+                args.crops_coords_top_left_h,
+                args.crops_coords_top_left_w,
+            ],
+            device=accelerator.device,
+        )
     else:
         train_dataset = make_wds_canny_controlnet_dataset(
             train_shards_path_or_url=args.train_shards_path_or_url,
@@ -1201,6 +1200,17 @@ def main(args):
             num_workers=args.dataloader_num_workers,
             pin_memory=True,
             persistent_workers=True,
+        )
+
+        time_ids = torch.tensor(
+            [
+                # The first original size is dynamically determined from the dataset
+                args.resolution,
+                args.resolution,
+                args.crops_coords_top_left_h,
+                args.crops_coords_top_left_w,
+            ],
+            device=accelerator.device,
         )
 
     # Scheduler and math around the number of training steps.
@@ -1300,21 +1310,49 @@ def main(args):
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet):
-                image, control_image, text, orig_size = batch
+                # latents
+                pixel_values = batch["pixel_values"]
 
-                encoded_text = compute_embeddings(text, orig_size)
-                image = image.to(accelerator.device, non_blocking=True)
-                control_image = control_image.to(accelerator.device, non_blocking=True)
-
-                # Convert images to latent space
                 if args.pretrained_vae_model_name_or_path is not None:
-                    pixel_values = image.to(dtype=weight_dtype)
+                    pixel_values_dtype = weight_dtype
                 else:
-                    pixel_values = image
+                    pixel_values_dtype = None
+
+                pixel_values = pixel_values.to(accelerator.device, dtype=pixel_values_dtype, non_blocking=True)
+
                 latents = vae.encode(pixel_values).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
                 if args.pretrained_vae_model_name_or_path is None:
                     latents = latents.to(weight_dtype)
+
+                # controlnet_image
+                controlnet_image = batch["conditioning_pixel_values"]
+                controlnet_image = controlnet_image.to(accelerator.device, dtype=weight_dtype, non_blocking=True)
+
+                # prompt_embeds and text_embeds
+                if args.wds_dataset_url is None:
+                    prompt_embeds = batch["prompt_ids"]
+                    text_embeds = batch["text_embeds"]
+                else:
+                    text = batch["text"]
+                    compute_text_embeddings_out = compute_text_embeddings(text)
+
+                    prompt_embeds = compute_text_embeddings_out["prompt_embeds"]
+                    text_embeds = compute_text_embeddings_out["text_embeds"]
+
+                prompt_embeds = prompt_embeds.to(accelerator.device, non_blocking=True)
+                text_embeds = text_embeds.to(accelerator.device, non_blocking=True)
+
+                # time_ids_
+                batch_size = pixel_values.shape[0]
+                time_ids_ = time_ids[None, :]
+                time_ids_ = time_ids.view(batch_size, -1)
+
+                if args.wds_dataset_url is not None:
+                    orig_size = batch["orig_size"]
+                    time_ids_ = torch.concat((orig_size, time_ids_), dim=1)
+
+                time_ids_ = time_ids_.to(accelerator.device, non_blocking=True)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -1329,13 +1367,11 @@ def main(args):
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # ControlNet conditioning.
-                controlnet_image = control_image.to(dtype=weight_dtype)
-                prompt_embeds = encoded_text.pop("prompt_embeds")
                 down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=prompt_embeds,
-                    added_cond_kwargs=encoded_text,
+                    added_cond_kwargs={"text_embeds": text_embeds, "time_ids": time_ids_},
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                 )
@@ -1345,7 +1381,7 @@ def main(args):
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=prompt_embeds,
-                    added_cond_kwargs=encoded_text,
+                    added_cond_kwargs={"text_embeds": text_embeds, "time_ids": time_ids_},
                     down_block_additional_residuals=[
                         sample.to(dtype=weight_dtype) for sample in down_block_res_samples
                     ],
