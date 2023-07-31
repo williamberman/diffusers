@@ -605,10 +605,10 @@ def parse_args(input_args=None):
     else:
         args = parser.parse_args()
 
-    if args.dataset_name is None and args.train_data_dir is None:
+    if args.wds_dataset_url is None and args.dataset_name is None and args.train_data_dir is None:
         raise ValueError("Specify either `--dataset_name` or `--train_data_dir`")
 
-    if args.dataset_name is not None and args.train_data_dir is not None:
+    if args.wds_dataset_url is None and args.dataset_name is not None and args.train_data_dir is not None:
         raise ValueError("Specify only one of `--dataset_name` or `--train_data_dir`")
 
     if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
@@ -705,7 +705,7 @@ def get_train_dataset(args, accelerator):
 
 
 def make_wds_canny_controlnet_dataset(
-    train_shards_path_or_url: str,
+    wds_dataset_url: str,
     per_gpu_batch_size: int,
     resolution: int = 256,
     shuffle_buffer_size: int = 1000,
@@ -744,7 +744,7 @@ def make_wds_canny_controlnet_dataset(
         }
 
     pipeline = [
-        wds.ResampledShards(train_shards_path_or_url),
+        wds.ResampledShards(wds_dataset_url),
         tarfile_to_samples_nothrow,
         wds.shuffle(shuffle_buffer_size),
         wds.decode("pil", handler=wds.ignore_and_continue),
@@ -1180,7 +1180,7 @@ def main(args):
         )
     else:
         train_dataset = make_wds_canny_controlnet_dataset(
-            train_shards_path_or_url=args.train_shards_path_or_url,
+            wds_dataset_url=args.wds_dataset_url,
             per_gpu_batch_size=args.train_batch_size,
             resolution=args.resolution,
         )
