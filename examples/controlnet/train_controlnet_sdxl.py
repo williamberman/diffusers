@@ -1345,10 +1345,11 @@ def main(args):
                 # time_ids_
                 batch_size = pixel_values.shape[0]
                 time_ids_ = time_ids[None, :]
-                time_ids_ = time_ids.view(batch_size, -1)
+                time_ids_ = time_ids_.expand(batch_size, -1)
 
                 if args.wds_dataset_url is not None:
                     orig_size = batch["orig_size"]
+                    orig_size = orig_size.to(accelerator.device, non_blocking=True)
                     time_ids_ = torch.concat((orig_size, time_ids_), dim=1)
 
                 time_ids_ = time_ids_.to(accelerator.device, non_blocking=True)
