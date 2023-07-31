@@ -1185,10 +1185,10 @@ def main(args):
             resolution=args.resolution,
         )
 
-        num_examples = None  # iterable dataset, can't know length in advanced
+        num_examples = None  # iterable dataset, can't know length
 
         num_batches_per_epoch = math.ceil(
-            args.num_train_examples / (args.train_batch_size * accelerator.num_processes * args.dataloader_num_workers)
+            args.max_train_samples / (args.train_batch_size * accelerator.num_processes * args.dataloader_num_workers)
         )  # per dataloader worker
 
         train_dataset = train_dataset.with_epoch(num_batches_per_epoch)
@@ -1259,9 +1259,8 @@ def main(args):
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
     if num_examples is not None:
-        logger.info(f"  Num batches each epoch = {num_examples}")
+        logger.info(f"  Num examples = {num_examples}")
     logger.info(f"  Num batches each epoch = {num_batches_per_epoch}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
