@@ -14,13 +14,13 @@
 # See the License for the specific language governing permissions and
 
 import argparse
-import functools
 import gc
 import logging
 import math
 import os
 import random
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 
 import accelerate
@@ -33,9 +33,11 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from datasets import load_dataset
+from datasets.fingerprint import Hasher
 from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from PIL import Image
+from torch.utils.data import DataLoader, default_collate
 from torchvision import transforms
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
@@ -51,11 +53,23 @@ from diffusers import (
 )
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
-from diffusers.utils.import_utils import is_xformers_available
+from diffusers.utils.import_utils import is_opencv_available, is_xformers_available
 
 
 if is_wandb_available():
     import wandb
+
+if is_opencv_available():
+    import cv2
+
+if is_opencv_available():
+    import webdataset as wds
+    from webdataset.tariterators import (
+        base_plus_ext,
+        tar_file_expander,
+        url_opener,
+        valid_sample,
+    )
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.20.0.dev0")
@@ -122,7 +136,7 @@ def log_validation(vae, unet, controlnet, args, accelerator, weight_dtype, step)
         images = []
 
         for _ in range(args.num_validation_images):
-            with torch.autocast("cuda"):
+            with nullcontext() if args.validation_disable_autocast else torch.autocast("cuda"):
                 image = pipeline(
                     prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
                 ).images[0]
@@ -178,7 +192,7 @@ def import_model_class_from_model_name_or_path(
     pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
 ):
     text_encoder_config = PretrainedConfig.from_pretrained(
-        pretrained_model_name_or_path, subfolder=subfolder, revision=revision
+        pretrained_model_name_or_path, subfolder=subfolder, revision=revision, use_auth_token=True
     )
     model_class = text_encoder_config.architectures[0]
 
@@ -210,7 +224,7 @@ def save_model_card(repo_id: str, image_logs=None, base_model=str, repo_folder=N
 
     yaml = f"""
 ---
-license: openrail++
+license: creativeml-openrail-m
 base_model: {base_model}
 tags:
 - stable-diffusion-xl
@@ -400,6 +414,9 @@ def parse_args(input_args=None):
     parser.add_argument("--adam_epsilon", type=float, default=1e-08, help="Epsilon value for the Adam optimizer")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
+    parser.add_argument(
+        "--push_to_hub_private", action="store_true", help="Whether or not to push the model to the Hub as private."
+    )
     parser.add_argument("--hub_token", type=str, default=None, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--hub_model_id",
@@ -471,6 +488,12 @@ def parse_args(input_args=None):
         type=str,
         default=None,
         help="The config of the Dataset, leave as None if there's only one config.",
+    )
+    parser.add_argument(
+        "--wds_dataset_url",
+        type=str,
+        default=None,
+        help="The url of a webdatasets dataset. If specified, will be used instead of the huggingface hub via `--dataset_name`",
     )
     parser.add_argument(
         "--train_data_dir",
@@ -559,6 +582,22 @@ def parse_args(input_args=None):
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
+    )
+    parser.add_argument(
+        "--huggingface_hub_use_auth_token",
+        action="store_true",
+        help="Set to use an auth token when pulling from the HuggingFace Hub.",
+    )
+    parser.add_argument(
+        "--force_vae_dtype",
+        type=str,
+        choices=["fp32"],
+        help="Force the VAE to use a certain dtype. SDXL VAE's have a tendency to cause nan losses when loaded in fp16.",
+    )
+    parser.add_argument(
+        "--validation_disable_autocast",
+        action="store_true",
+        help="Set to disable autocast when producing validation images. Some pipeline setups produce black images when autocast is enabled.",
     )
 
     if input_args is not None:
@@ -665,6 +704,115 @@ def get_train_dataset(args, accelerator):
     return train_dataset
 
 
+def make_wds_canny_controlnet_dataset(
+    train_shards_path_or_url: str,
+    per_gpu_batch_size: int,
+    resolution: int = 256,
+    shuffle_buffer_size: int = 1000,
+):
+    def mapper(d):
+        pixel_values = transforms.Compose(
+            [
+                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(resolution),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )(d["image"])
+
+        conditioning_pixel_values = transforms.Compose(
+            [
+                control_transform,
+                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.CenterCrop(resolution),
+                transforms.ToTensor(),
+            ]
+        )(d["control_image"])
+
+        metadata = d["metadata"]
+        original_width = int(metadata.get("original_width", 0.0))
+        original_height = int(metadata.get("original_height", 0.0))
+        orig_size = torch.tensor([original_width, original_height])
+
+        text = d["text"]
+
+        return {
+            "pixel_values": pixel_values,
+            "conditioning_pixel_values": conditioning_pixel_values,
+            "orig_size": orig_size,
+            "text": text,
+        }
+
+    pipeline = [
+        wds.ResampledShards(train_shards_path_or_url),
+        tarfile_to_samples_nothrow,
+        wds.shuffle(shuffle_buffer_size),
+        wds.decode("pil", handler=wds.ignore_and_continue),
+        wds.rename(
+            image="jpg;png;jpeg;webp",
+            control_image="jpg;png;jpeg;webp",
+            text="text;txt;caption",
+            metadata="json",
+            handler=wds.warn_and_continue,
+        ),
+        wds.map(mapper),
+        wds.batched(per_gpu_batch_size, partial=False, collation_fn=default_collate),
+    ]
+
+    dataset = wds.DataPipeline(*pipeline)
+
+    return dataset
+
+
+def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
+    # NOTE this is a re-impl of the webdataset impl with group_by_keys that doesn't throw
+    streams = url_opener(src, handler=handler)
+    files = tar_file_expander(streams, handler=handler)
+    samples = group_by_keys_nothrow(files, handler=handler)
+    return samples
+
+
+def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
+    """Return function over iterator that groups key, value pairs into samples.
+
+    :param keys: function that splits the key into key and extension (base_plus_ext)
+    :param lcase: convert suffixes to lower case (Default value = True)
+    """
+    current_sample = None
+    for filesample in data:
+        assert isinstance(filesample, dict)
+        fname, value = filesample["fname"], filesample["data"]
+        prefix, suffix = keys(fname)
+        if prefix is None:
+            continue
+        if lcase:
+            suffix = suffix.lower()
+        # FIXME webdataset version throws if suffix in current_sample, but we have a potential for
+        #  this happening in the current LAION400m dataset if a tar ends with same prefix as the next
+        #  begins, rare, but can happen since prefix aren't unique across tar files in that dataset
+        if current_sample is None or prefix != current_sample["__key__"] or suffix in current_sample:
+            if valid_sample(current_sample):
+                yield current_sample
+            current_sample = {"__key__": prefix, "__url__": filesample["__url__"]}
+        if suffixes is None or suffix in suffixes:
+            current_sample[suffix] = value
+    if valid_sample(current_sample):
+        yield current_sample
+
+
+def control_transform(image):
+    image = np.array(image)
+
+    low_threshold = 100
+    high_threshold = 200
+
+    image = cv2.Canny(image, low_threshold, high_threshold)
+    image = image[:, :, None]
+    image = np.concatenate([image, image, image], axis=2)
+    control_image = Image.fromarray(image)
+    return control_image
+
+
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
 def encode_prompt(prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train=True):
     prompt_embeds_list = []
@@ -752,13 +900,12 @@ def collate_fn(examples):
     prompt_ids = torch.stack([torch.tensor(example["prompt_embeds"]) for example in examples])
 
     add_text_embeds = torch.stack([torch.tensor(example["text_embeds"]) for example in examples])
-    add_time_ids = torch.stack([torch.tensor(example["time_ids"]) for example in examples])
 
     return {
         "pixel_values": pixel_values,
         "conditioning_pixel_values": conditioning_pixel_values,
         "prompt_ids": prompt_ids,
-        "unet_added_conditions": {"text_embeds": add_text_embeds, "time_ids": add_time_ids},
+        "text_embeds": add_text_embeds,
     }
 
 
@@ -799,7 +946,10 @@ def main(args):
 
         if args.push_to_hub:
             repo_id = create_repo(
-                repo_id=args.hub_model_id or Path(args.output_dir).name, exist_ok=True, token=args.hub_token
+                repo_id=args.hub_model_id or Path(args.output_dir).name,
+                exist_ok=True,
+                token=args.hub_token,
+                private=args.push_to_hub_private,
             ).repo_id
 
     # Load the tokenizers
@@ -837,7 +987,10 @@ def main(args):
         revision=args.revision,
     )
     unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision
+        args.pretrained_model_name_or_path,
+        subfolder="unet",
+        revision=args.revision,
+        use_auth_token=args.huggingface_hub_use_auth_token,
     )
 
     if args.controlnet_model_name_or_path:
@@ -954,76 +1107,115 @@ def main(args):
 
     # Move vae, unet and text_encoder to device and cast to weight_dtype
     # The VAE is in float32 to avoid NaN losses.
-    if args.pretrained_vae_model_name_or_path is not None:
-        vae.to(accelerator.device, dtype=weight_dtype)
+    if args.force_vae_dtype is not None:
+        if args.force_vae_dtype == "fp32":
+            vae_dtype = torch.float32
+        else:
+            assert False
+    elif args.pretrained_vae_model_name_or_path is not None:
+        vae_dtype = weight_dtype
     else:
-        vae.to(accelerator.device, dtype=torch.float32)
+        vae_dtype = torch.float32
+
+    vae.to(accelerator.device, dtype=vae_dtype)
+
     unet.to(accelerator.device, dtype=weight_dtype)
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
 
-    # Here, we compute not just the text embeddings but also the additional embeddings
-    # needed for the SD XL UNet to operate.
-    def compute_embeddings(batch, proportion_empty_prompts, text_encoders, tokenizers, is_train=True):
-        original_size = (args.resolution, args.resolution)
-        target_size = (args.resolution, args.resolution)
-        crops_coords_top_left = (args.crops_coords_top_left_h, args.crops_coords_top_left_w)
-        prompt_batch = batch[args.caption_column]
-
+    def compute_text_embeddings(prompt_batch):
         prompt_embeds, pooled_prompt_embeds = encode_prompt(
-            prompt_batch, text_encoders, tokenizers, proportion_empty_prompts, is_train
+            prompt_batch, text_encoders, tokenizers, args.proportion_empty_prompts, is_train=True
         )
         add_text_embeds = pooled_prompt_embeds
 
-        # Adapted from pipeline.StableDiffusionXLPipeline._get_add_time_ids
-        add_time_ids = list(original_size + crops_coords_top_left + target_size)
-        add_time_ids = torch.tensor([add_time_ids])
+        prompt_embeds = prompt_embeds.to("cpu")
+        add_text_embeds = add_text_embeds.to("cpu")
 
-        prompt_embeds = prompt_embeds.to(accelerator.device)
-        add_text_embeds = add_text_embeds.to(accelerator.device)
-        add_time_ids = add_time_ids.repeat(len(prompt_batch), 1)
-        add_time_ids = add_time_ids.to(accelerator.device, dtype=prompt_embeds.dtype)
-        unet_added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-
-        return {"prompt_embeds": prompt_embeds, **unet_added_cond_kwargs}
+        return {"prompt_embeds": prompt_embeds, "text_embeds": add_text_embeds}
 
     # Let's first compute all the embeddings so that we can free up the text encoders
     # from memory.
     text_encoders = [text_encoder_one, text_encoder_two]
     tokenizers = [tokenizer_one, tokenizer_two]
-    train_dataset = get_train_dataset(args, accelerator)
-    compute_embeddings_fn = functools.partial(
-        compute_embeddings,
-        text_encoders=text_encoders,
-        tokenizers=tokenizers,
-        proportion_empty_prompts=args.proportion_empty_prompts,
-    )
-    with accelerator.main_process_first():
-        from datasets.fingerprint import Hasher
 
-        # fingerprint used by the cache for the other processes to load the result
-        # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
-        new_fingerprint = Hasher.hash(args)
-        train_dataset = train_dataset.map(compute_embeddings_fn, batched=True, new_fingerprint=new_fingerprint)
+    if args.wds_dataset_url is None:
+        train_dataset = get_train_dataset(args, accelerator)
 
-    del text_encoders, tokenizers
-    gc.collect()
-    torch.cuda.empty_cache()
+        with accelerator.main_process_first():
+            # fingerprint used by the cache for the other processes to load the result
+            # details: https://github.com/huggingface/diffusers/pull/4038#discussion_r1266078401
+            new_fingerprint = Hasher.hash(args)
+            train_dataset = train_dataset.map(compute_text_embeddings, batched=True, new_fingerprint=new_fingerprint)
 
-    # Then get the training dataset ready to be passed to the dataloader.
-    train_dataset = prepare_train_dataset(train_dataset, accelerator)
+        del text_encoders, tokenizers
+        gc.collect()
+        torch.cuda.empty_cache()
 
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        shuffle=True,
-        collate_fn=collate_fn,
-        batch_size=args.train_batch_size,
-        num_workers=args.dataloader_num_workers,
-    )
+        num_examples = len(train_dataset)
+
+        # Then get the training dataset ready to be passed to the dataloader.
+        train_dataset = prepare_train_dataset(train_dataset, accelerator)
+
+        train_dataloader = torch.utils.data.DataLoader(
+            train_dataset,
+            shuffle=True,
+            collate_fn=collate_fn,
+            batch_size=args.train_batch_size,
+            num_workers=args.dataloader_num_workers,
+        )
+
+        num_batches_per_epoch = len(train_dataloader)
+
+        time_ids = torch.tensor(
+            [
+                args.resolution,
+                args.resolution,
+                args.resolution,
+                args.resolution,
+                args.crops_coords_top_left_h,
+                args.crops_coords_top_left_w,
+            ],
+            device=accelerator.device,
+        )
+    else:
+        train_dataset = make_wds_canny_controlnet_dataset(
+            train_shards_path_or_url=args.train_shards_path_or_url,
+            per_gpu_batch_size=args.train_batch_size,
+            resolution=args.resolution,
+        )
+
+        num_examples = None  # iterable dataset, can't know length in advanced
+
+        num_batches_per_epoch = math.ceil(
+            args.num_train_examples / (args.train_batch_size * accelerator.num_processes * args.dataloader_num_workers)
+        )  # per dataloader worker
+
+        train_dataset = train_dataset.with_epoch(num_batches_per_epoch)
+
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=None,
+            shuffle=False,
+            num_workers=args.dataloader_num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+        )
+
+        time_ids = torch.tensor(
+            [
+                # The first original size is dynamically determined from the dataset
+                args.resolution,
+                args.resolution,
+                args.crops_coords_top_left_h,
+                args.crops_coords_top_left_w,
+            ],
+            device=accelerator.device,
+        )
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(num_batches_per_epoch / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
@@ -1038,12 +1230,15 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
-    )
+    if args.wds_dataset_url is None:
+        controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            controlnet, optimizer, train_dataloader, lr_scheduler
+        )
+    else:
+        controlnet, optimizer, lr_scheduler = accelerator.prepare(controlnet, optimizer, lr_scheduler)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(num_batches_per_epoch / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
@@ -1065,7 +1260,9 @@ def main(args):
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
-    logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
+    if num_examples is not None:
+        logger.info(f"  Num batches each epoch = {num_examples}")
+    logger.info(f"  Num batches each epoch = {num_batches_per_epoch}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -1113,15 +1310,49 @@ def main(args):
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet):
-                # Convert images to latent space
+                # latents
+                pixel_values = batch["pixel_values"]
+
                 if args.pretrained_vae_model_name_or_path is not None:
-                    pixel_values = batch["pixel_values"].to(dtype=weight_dtype)
+                    pixel_values_dtype = weight_dtype
                 else:
-                    pixel_values = batch["pixel_values"]
+                    pixel_values_dtype = None
+
+                pixel_values = pixel_values.to(accelerator.device, dtype=pixel_values_dtype, non_blocking=True)
+
                 latents = vae.encode(pixel_values).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
                 if args.pretrained_vae_model_name_or_path is None:
                     latents = latents.to(weight_dtype)
+
+                # controlnet_image
+                controlnet_image = batch["conditioning_pixel_values"]
+                controlnet_image = controlnet_image.to(accelerator.device, dtype=weight_dtype, non_blocking=True)
+
+                # prompt_embeds and text_embeds
+                if args.wds_dataset_url is None:
+                    prompt_embeds = batch["prompt_ids"]
+                    text_embeds = batch["text_embeds"]
+                else:
+                    text = batch["text"]
+                    compute_text_embeddings_out = compute_text_embeddings(text)
+
+                    prompt_embeds = compute_text_embeddings_out["prompt_embeds"]
+                    text_embeds = compute_text_embeddings_out["text_embeds"]
+
+                prompt_embeds = prompt_embeds.to(accelerator.device, non_blocking=True)
+                text_embeds = text_embeds.to(accelerator.device, non_blocking=True)
+
+                # time_ids_
+                batch_size = pixel_values.shape[0]
+                time_ids_ = time_ids[None, :]
+                time_ids_ = time_ids.view(batch_size, -1)
+
+                if args.wds_dataset_url is not None:
+                    orig_size = batch["orig_size"]
+                    time_ids_ = torch.concat((orig_size, time_ids_), dim=1)
+
+                time_ids_ = time_ids_.to(accelerator.device, non_blocking=True)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -1136,12 +1367,11 @@ def main(args):
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 # ControlNet conditioning.
-                controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
                 down_block_res_samples, mid_block_res_sample = controlnet(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=batch["prompt_ids"],
-                    added_cond_kwargs=batch["unet_added_conditions"],
+                    encoder_hidden_states=prompt_embeds,
+                    added_cond_kwargs={"text_embeds": text_embeds, "time_ids": time_ids_},
                     controlnet_cond=controlnet_image,
                     return_dict=False,
                 )
@@ -1150,8 +1380,8 @@ def main(args):
                 model_pred = unet(
                     noisy_latents,
                     timesteps,
-                    encoder_hidden_states=batch["prompt_ids"],
-                    added_cond_kwargs=batch["unet_added_conditions"],
+                    encoder_hidden_states=prompt_embeds,
+                    added_cond_kwargs={"text_embeds": text_embeds, "time_ids": time_ids_},
                     down_block_additional_residuals=[
                         sample.to(dtype=weight_dtype) for sample in down_block_res_samples
                     ],
