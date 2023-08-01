@@ -21,6 +21,7 @@ import os
 import random
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import accelerate
 import numpy as np
@@ -593,6 +594,13 @@ def parse_args(input_args=None):
         choices=["fp32"],
         help="Force the VAE to use a certain dtype. SDXL VAE's have a tendency to cause nan losses when loaded in fp16.",
     )
+    parser.add_argument(
+        "--min_resolution",
+        type=int,
+        default=None,
+        required=False,
+        help="Filter the dataset such that all selected images have at least one dimension >= to `--min_resolution`",
+    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -702,26 +710,47 @@ def make_wds_canny_controlnet_dataset(
     wds_dataset_url: str,
     per_gpu_batch_size: int,
     resolution: int = 256,
+    min_resolution: Optional[int] = None,
     shuffle_buffer_size: int = 1000,
 ):
-    def mapper(d):
-        pixel_values = transforms.Compose(
-            [
-                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(resolution),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )(d["image"])
+    pixel_values_transform = transforms.Compose(
+        [
+            *(
+                [transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR)]
+                if min_resolution is None
+                else []
+            ),
+            transforms.CenterCrop(resolution),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
+        ]
+    )
 
-        conditioning_pixel_values = transforms.Compose(
-            [
-                control_transform,
-                transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(resolution),
-                transforms.ToTensor(),
-            ]
-        )(d["control_image"])
+    def control_transform(image):
+        image = np.array(image)
+        image = cv2.Canny(image, 100, 200)
+        image = image[:, :, None]
+        image = np.concatenate([image, image, image], axis=2)
+        control_image = Image.fromarray(image)
+        return control_image
+
+    conditioning_pixel_values_transform = transforms.Compose(
+        [
+            control_transform,
+            *(
+                [transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR)]
+                if min_resolution is None
+                else []
+            ),
+            transforms.CenterCrop(resolution),
+            transforms.ToTensor(),
+        ]
+    )
+
+    def mapper(d):
+        pixel_values = pixel_values_transform(d["image"])
+
+        conditioning_pixel_values = conditioning_pixel_values_transform(d["image"])
 
         metadata = d["metadata"]
         original_width = int(metadata.get("original_width", 0.0))
@@ -737,6 +766,11 @@ def make_wds_canny_controlnet_dataset(
             "text": text,
         }
 
+    def select_only_images_greater_than(d):
+        width, height = d["image"].size
+
+        return width >= min_resolution and height >= min_resolution
+
     pipeline = [
         wds.ResampledShards(wds_dataset_url),
         tarfile_to_samples_nothrow,
@@ -744,11 +778,11 @@ def make_wds_canny_controlnet_dataset(
         wds.decode("pil", handler=wds.ignore_and_continue),
         wds.rename(
             image="jpg;png;jpeg;webp",
-            control_image="jpg;png;jpeg;webp",
             text="text;txt;caption",
             metadata="json",
             handler=wds.warn_and_continue,
         ),
+        *([] if min_resolution is None else [wds.select(select_only_images_greater_than)]),
         wds.map(mapper),
         wds.batched(per_gpu_batch_size, partial=False, collation_fn=default_collate),
     ]
@@ -792,19 +826,6 @@ def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, h
             current_sample[suffix] = value
     if valid_sample(current_sample):
         yield current_sample
-
-
-def control_transform(image):
-    image = np.array(image)
-
-    low_threshold = 100
-    high_threshold = 200
-
-    image = cv2.Canny(image, low_threshold, high_threshold)
-    image = image[:, :, None]
-    image = np.concatenate([image, image, image], axis=2)
-    control_image = Image.fromarray(image)
-    return control_image
 
 
 # Adapted from pipelines.StableDiffusionXLPipeline.encode_prompt
@@ -1177,6 +1198,7 @@ def main(args):
             wds_dataset_url=args.wds_dataset_url,
             per_gpu_batch_size=args.train_batch_size,
             resolution=args.resolution,
+            min_resolution=args.min_resolution,
         )
 
         num_examples = None  # iterable dataset, can't know length
