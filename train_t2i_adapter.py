@@ -68,6 +68,10 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
+from PIL import Image
+from controlnet_aux import OpenposeDetector
+import numpy as np
+from controlnet_aux.util import HWC3, resize_image
 
 
 MAX_SEQ_LENGTH = 77
@@ -123,25 +127,6 @@ def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
     samples = group_by_keys_nothrow(files, handler=handler)
     return samples
 
-class WebdatasetFilter:
-    def __init__(self, min_size=1024, max_pwatermark=0.5):
-        self.min_size = min_size
-        self.max_pwatermark = max_pwatermark
-
-    def __call__(self, x):
-        try:
-            if "json" in x:
-                x_json = json.loads(x["json"])
-                filter_size = (x_json.get("original_width", 0.0) or 0.0) >= self.min_size and x_json.get(
-                    "original_height", 0
-                ) >= self.min_size
-                filter_watermark = (x_json.get("pwatermark", 1.0) or 1.0) <= self.max_pwatermark
-                return filter_size and filter_watermark
-            else:
-                return False
-        except Exception:
-            return False
-
 
 class Text2ImageDataset:
     def __init__(
@@ -151,15 +136,10 @@ class Text2ImageDataset:
         per_gpu_batch_size: int,
         global_batch_size: int,
         num_workers: int,
-        resolution: int = 256,
-        center_crop: bool = True,
-        random_flip: bool = False,
         shuffle_buffer_size: int = 1000,
         pin_memory: bool = False,
         persistent_workers: bool = False,
-        control_type: str = "canny",
-        feature_extractor: Optional[DPTFeatureExtractor] = None,
-        num_channels: int = 1,
+        resolution: int = 256,
     ):
         if not isinstance(train_shards_path_or_url, str):
             train_shards_path_or_url = [list(braceexpand(urls)) for urls in train_shards_path_or_url]
@@ -168,6 +148,40 @@ class Text2ImageDataset:
 
         def get_orig_size(json):
             return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
+
+        openpose = OpenposeDetector.from_pretrained('lllyasviel/ControlNet')
+
+        def select(d):
+            input_image = d['control_image']
+            input_image = np.array(input_image, dtype=np.uint8)
+
+            input_image = HWC3(input_image)
+            input_image = resize_image(input_image, 512)
+            poses = openpose.detect_poses(input_image)
+
+            at_least_one_pose_found = len(poses) > 0
+            
+            return at_least_one_pose_found
+
+        def image_transform(example):
+            image = example["image"]
+            image = TF.resize(image, resolution, interpolation=transforms.InterpolationMode.BILINEAR)
+
+            # get crop coordinates
+            c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
+            image = TF.crop(image, c_top, c_left, resolution, resolution)
+
+            control_image = openpose(image)
+
+            image = TF.to_tensor(image)
+            image = TF.normalize(image, [0.5], [0.5])
+            control_image = TF.to_tensor(control_image)
+
+            example["image"] = image
+            example["control_image"] = control_image
+            example["crop_coords"] = (c_top, c_left)
+
+            return example
 
         processing_pipeline = [
             wds.decode("pil", handler=wds.ignore_and_continue),
@@ -179,6 +193,7 @@ class Text2ImageDataset:
                 handler=wds.warn_and_continue,
             ),
             wds.map(filter_keys({"image", "control_image", "text", "orig_size"})),
+            wds.select(select),
             wds.map_dict(orig_size=get_orig_size),
             wds.map(image_transform),
             wds.to_tuple("image", "control_image", "text", "orig_size", "crop_coords"),
@@ -639,12 +654,6 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--control_type",
-        type=str,
-        default="canny",
-        help=("The type of t2iadapter conditioning image to use. One of `canny`, `depth`" " Defaults to `canny`."),
-    )
-    parser.add_argument(
         "--use_euler",
         action="store_true",
         default=False,
@@ -1011,14 +1020,10 @@ def main(args):
         per_gpu_batch_size=args.train_batch_size,
         global_batch_size=args.train_batch_size * accelerator.num_processes,
         num_workers=args.dataloader_num_workers,
-        resolution=args.resolution,
-        center_crop=False,
-        random_flip=False,
         shuffle_buffer_size=1000,
         pin_memory=True,
         persistent_workers=True,
-        control_type=args.control_type,
-        num_channels=args.adapter_in_channels,
+        resolution=args.resolution,
     )
     train_dataloader = dataset.train_dataloader
 
