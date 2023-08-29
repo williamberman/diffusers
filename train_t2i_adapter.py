@@ -156,7 +156,7 @@ class Text2ImageDataset:
             input_image = np.array(input_image, dtype=np.uint8)
 
             input_image = HWC3(input_image)
-            input_image = resize_image(input_image, 512)
+            input_image = resize_image(input_image, resolution)
             poses = openpose.detect_poses(input_image)
 
             at_least_one_pose_found = len(poses) > 0
@@ -171,7 +171,7 @@ class Text2ImageDataset:
             c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
             image = TF.crop(image, c_top, c_left, resolution, resolution)
 
-            control_image = openpose(image)
+            control_image = openpose(image, detect_resolution=resolution, image_resolution=resolution)
 
             image = TF.to_tensor(image)
             image = TF.normalize(image, [0.5], [0.5])
@@ -266,10 +266,7 @@ def log_validation(vae, unet, adapter, args, accelerator, weight_dtype, step):
 
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
         validation_image = Image.open(validation_image)
-        if args.adapter_in_channels == 1:
-            validation_image = validation_image.convert("L")
-        else:
-            validation_image = validation_image.convert("RGB")
+        validation_image = validation_image.convert("RGB")
         validation_image = validation_image.resize((args.resolution, args.resolution))
 
         images = []
@@ -820,7 +817,7 @@ def main(args):
 
     logger.info("Initializing t2iadapter weights from unet")
     t2iadapter = T2IAdapter(
-        in_channels=args.adapter_in_channels,
+        in_channels=3,
         channels=(320, 640, 1280, 1280),
         num_res_blocks=2,
         downscale_factor=16,
