@@ -81,72 +81,6 @@ check_min_version("0.18.0.dev0")
 logger = get_logger(__name__)
 
 
-def colorize(
-    value,
-    vmin=None,
-    vmax=None,
-    cmap="magma_r",
-    invalid_val=-99,
-    invalid_mask=None,
-    background_color=(128, 128, 128, 255),
-    value_transform=None,
-    num_channels=1,
-):
-    """Converts a depth map to a color image.
-    Args:
-        value (torch.Tensor, numpy.ndarry): Input depth map. Shape: (H, W) or (1, H, W) or (1, 1, H, W). All singular dimensions are squeezed
-        vmin (float, optional): vmin-valued entries are mapped to start color of cmap. If None, value.min() is used. Defaults to None.
-        vmax (float, optional):  vmax-valued entries are mapped to end color of cmap. If None, value.max() is used. Defaults to None.
-        cmap (str, optional): matplotlib colormap to use. Defaults to 'magma_r'.
-        invalid_val (int, optional): Specifies value of invalid pixels that should be colored as 'background_color'. Defaults to -99.
-        invalid_mask (numpy.ndarray, optional): Boolean mask for invalid regions. Defaults to None.
-        background_color (tuple[int], optional): 4-tuple RGB color to give to invalid pixels. Defaults to (128, 128, 128, 255).
-        gamma_corrected (bool, optional): Apply gamma correction to colored image. Defaults to False.
-        value_transform (Callable, optional): Apply transform function to valid pixels before coloring. Defaults to None.
-    Returns:
-        numpy.ndarray, dtype - uint8: Colored depth map. Shape: (H, W, 4)
-    """
-    if isinstance(value, torch.Tensor):
-        value = value.detach().cpu().numpy()
-
-    value = value.squeeze()
-    if invalid_mask is None:
-        invalid_mask = value == invalid_val
-    mask = np.logical_not(invalid_mask)
-
-    # normalize
-    vmin = np.percentile(value[mask], 2) if vmin is None else vmin
-    vmax = np.percentile(value[mask], 85) if vmax is None else vmax
-    if vmin != vmax:
-        value = (value - vmin) / (vmax - vmin)  # vmin..vmax
-    else:
-        # Avoid 0-division
-        value = value * 0.0
-
-    # squeeze last dim if it exists
-    # grey out the invalid values
-
-    value[invalid_mask] = np.nan
-    cmapper = matplotlib.cm.get_cmap(cmap)
-    if value_transform:
-        value = value_transform(value)
-        # value = value / value.max()
-    value = cmapper(value, bytes=True)  # (nxmx4)
-
-    # img = value[:, :, :]
-    img = value[...]
-    img[invalid_mask] = background_color
-
-    # gamma correction
-    img = img / 255
-    img = np.power(img, 2.2)
-    img = img * 255
-    img = img.astype(np.uint8)
-    img = Image.fromarray(img).convert("L")
-    img = np.array(img).astype(np.float32) / 255
-    return img
-
-
 def filter_keys(key_set):
     def _f(dictionary):
         return {k: v for k, v in dictionary.items() if k in key_set}
@@ -188,63 +122,6 @@ def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
     files = tar_file_expander(streams, handler=handler)
     samples = group_by_keys_nothrow(files, handler=handler)
     return samples
-
-
-def control_transform(image, low_threshold=100, high_threshold=200, shift_range=50, num_channels=1):
-    low_threshold = low_threshold + random.randint(-shift_range, shift_range)
-    high_threshold = high_threshold + random.randint(-shift_range, shift_range)
-
-    image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    image = cv2.Canny(image, low_threshold, high_threshold)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    control_image = Image.fromarray(image)
-    if num_channels == 1:
-        control_image = control_image.convert("L")
-    return control_image
-
-
-def canny_image_transform(example, resolution=1024, num_channels=1):
-    image = example["image"]
-    image = TF.resize(image, resolution, interpolation=transforms.InterpolationMode.BILINEAR)
-
-    # get crop coordinates
-    c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
-    image = TF.crop(image, c_top, c_left, resolution, resolution)
-
-    control_image = control_transform(image, num_channels=num_channels)
-
-    image = TF.to_tensor(image)
-    image = TF.normalize(image, [0.5], [0.5])
-    control_image = TF.to_tensor(control_image)
-
-    example["image"] = image
-    example["control_image"] = control_image
-    example["crop_coords"] = (c_top, c_left)
-
-    return example
-
-
-def depth_image_transform(example, feature_extractor, resolution=1024):
-    image = example["image"]
-    image = transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR)(image)
-    # get crop coordinates
-    c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
-    image = transforms.functional.crop(image, c_top, c_left, resolution, resolution)
-
-    if feature_extractor is not None:
-        control_image = feature_extractor(images=image, return_tensors="pt").pixel_values.squeeze(0)
-    else:
-        control_image = transforms.ToTensor()(image)
-
-    image = transforms.ToTensor()(image)
-    image = transforms.Normalize([0.5], [0.5])(image)
-
-    example["image"] = image
-    example["control_image"] = control_image
-    example["crop_coords"] = (c_top, c_left)
-
-    return example
-
 
 class WebdatasetFilter:
     def __init__(self, min_size=1024, max_pwatermark=0.5):
@@ -292,15 +169,6 @@ class Text2ImageDataset:
         def get_orig_size(json):
             return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
 
-        if control_type == "canny":
-            image_transform = functools.partial(
-                canny_image_transform, resolution=resolution, num_channels=num_channels
-            )
-        elif control_type == "depth":
-            image_transform = functools.partial(
-                depth_image_transform, feature_extractor=feature_extractor, resolution=resolution
-            )
-
         processing_pipeline = [
             wds.decode("pil", handler=wds.ignore_and_continue),
             wds.rename(
@@ -320,7 +188,6 @@ class Text2ImageDataset:
         pipeline = [
             wds.ResampledShards(train_shards_path_or_url),
             tarfile_to_samples_nothrow,
-            # wds.select(WebdatasetFilter(min_size=512)),
             wds.shuffle(shuffle_buffer_size),
             *processing_pipeline,
             wds.batched(per_gpu_batch_size, partial=False, collation_fn=default_collate),
@@ -351,17 +218,6 @@ class Text2ImageDataset:
     @property
     def train_dataloader(self):
         return self._train_dataloader
-
-
-def image_grid(imgs, rows, cols):
-    assert len(imgs) == rows * cols
-
-    w, h = imgs[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-
-    for i, img in enumerate(imgs):
-        grid.paste(img, box=(i % cols * w, i // cols * h))
-    return grid
 
 
 def log_validation(vae, unet, adapter, args, accelerator, weight_dtype, step):
@@ -474,43 +330,6 @@ def import_model_class_from_model_name_or_path(
         return CLIPTextModelWithProjection
     else:
         raise ValueError(f"{model_class} is not supported.")
-
-
-def save_model_card(repo_id: str, image_logs=None, base_model=str, repo_folder=None):
-    img_str = ""
-    if image_logs is not None:
-        img_str = "You can find some example images below.\n"
-        for i, log in enumerate(image_logs):
-            images = log["images"]
-            validation_prompt = log["validation_prompt"]
-            validation_image = log["validation_image"]
-            validation_image.save(os.path.join(repo_folder, "image_control.png"))
-            img_str += f"prompt: {validation_prompt}\n"
-            images = [validation_image] + images
-            image_grid(images, 1, len(images)).save(os.path.join(repo_folder, f"images_{i}.png"))
-            img_str += f"![images_{i})](./images_{i}.png)\n"
-
-    yaml = f"""
----
-license: creativeml-openrail-m
-base_model: {base_model}
-tags:
-- stable-diffusion-xl
-- stable-diffusion-xl-diffusers
-- text-to-image
-- diffusers
-- t2iadapter
-inference: true
----
-    """
-    model_card = f"""
-# t2iadapter-{repo_id}
-
-These are t2iadapter weights trained on {base_model} with new type of conditioning.
-{img_str}
-"""
-    with open(os.path.join(repo_folder, "README.md"), "w") as f:
-        f.write(yaml + model_card)
 
 
 def parse_args(input_args=None):
@@ -1009,19 +828,6 @@ def main(args):
     if args.use_ema:
         ema_adapter = EMAModel(t2iadapter.parameters(), model_cls=T2IAdapter, model_config=t2iadapter.config, inv_gamma=1, power=3/4)
 
-    if args.control_type == "depth":
-        if args.depth_model_name_or_path == "zoe":
-            # torch.hub.help("intel-isl/MiDaS", "DPT_BEiT_L_384", force_reload=True)  # Triggers fresh download of MiDaS repo
-            depth_model = torch.hub.load("isl-org/ZoeDepth", "ZoeD_NK", pretrained=True).eval()
-            feature_extractor = None
-        else:
-            feature_extractor = DPTFeatureExtractor.from_pretrained(args.depth_model_name_or_path)
-            depth_model = DPTForDepthEstimation.from_pretrained(args.depth_model_name_or_path)
-        depth_model.requires_grad_(False)
-    else:
-        feature_extractor = None
-        depth_model = None
-
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
@@ -1153,11 +959,6 @@ def main(args):
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
     if args.use_ema:
         ema_adapter.to(accelerator.device, dtype=weight_dtype)
-    if args.control_type == "depth":
-        if args.depth_model_name_or_path == "zoe":
-            depth_model.to(accelerator.device)
-        else:
-            depth_model.to(accelerator.device, dtype=weight_dtype)
 
     # Here, we compute not just the text embeddings but also the additional embeddings
     # needed for the SD XL UNet to operate.
@@ -1217,7 +1018,6 @@ def main(args):
         pin_memory=True,
         persistent_workers=True,
         control_type=args.control_type,
-        feature_extractor=feature_extractor,
         num_channels=args.adapter_in_channels,
     )
     train_dataloader = dataset.train_dataloader
@@ -1351,36 +1151,6 @@ def main(args):
                 latents = latents * vae.config.scaling_factor
                 if args.pretrained_vae_model_name_or_path is None:
                     latents = latents.to(weight_dtype)
-
-                if args.control_type == "depth":
-                    if args.depth_model_name_or_path == "zoe":
-                        with torch.autocast("cuda", enabled=True):
-                            depth_map = depth_model.infer(control_image)
-
-                        # apply the colorize function to each example in the batch and concatenate
-                        control_image = [
-                            torch.tensor(colorize(depth_map[i], cmap="gray_r", num_channels=args.adapter_in_channels))
-                            for i in range(depth_map.shape[0])
-                        ]
-                        control_image = torch.stack(control_image, dim=0).to(accelerator.device, dtype=weight_dtype)
-                        control_image = control_image.unsqueeze(1)
-                    else:
-                        control_image = control_image.to(weight_dtype)
-                        with torch.autocast("cuda"):
-                            depth_map = depth_model(control_image).predicted_depth
-                        depth_map = torch.nn.functional.interpolate(
-                            depth_map.unsqueeze(1),
-                            size=image.shape[2:],
-                            mode="bicubic",
-                            align_corners=False,
-                        )
-                        depth_min = torch.amin(depth_map, dim=[1, 2, 3], keepdim=True)
-                        depth_max = torch.amax(depth_map, dim=[1, 2, 3], keepdim=True)
-                        depth_map = (depth_map - depth_min) / (depth_max - depth_min)
-                        control_image = (depth_map * 255.0).to(torch.uint8).float() / 255.0  # hack to match inference
-
-                    if args.adapter_in_channels == 3:
-                        control_image = torch.cat([control_image] * 3, dim=1)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -1518,22 +1288,7 @@ def main(args):
             ema_adapter.copy_to(t2iadapter.parameters())
             t2iadapter.save_pretrained(os.path.join(args.output_dir, "t2iadapter_ema"))
 
-        if args.push_to_hub:
-            save_model_card(
-                repo_id,
-                image_logs=image_logs,
-                base_model=args.pretrained_model_name_or_path,
-                repo_folder=args.output_dir,
-            )
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
-
     accelerator.end_training()
-
 
 if __name__ == "__main__":
     args = parse_args()
