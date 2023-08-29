@@ -267,15 +267,13 @@ def log_validation(vae, unet, adapter, args, accelerator, weight_dtype, step):
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
         validation_image = Image.open(validation_image)
         validation_image = validation_image.convert("RGB")
-        validation_image = validation_image.resize((args.resolution, args.resolution))
+        # validation_image = validation_image.resize((args.resolution, args.resolution))
 
         images = []
 
         for _ in range(args.num_validation_images):
             with torch.autocast("cuda"):
-                image = pipeline(
-                    prompt=validation_prompt, image=validation_image, num_inference_steps=20, generator=generator
-                ).images[0]
+                image = pipeline(prompt=validation_prompt, image=validation_image, generator=generator).images[0]
             images.append(image)
 
         image_logs.append(
@@ -1122,7 +1120,6 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(t2iadapter):
@@ -1262,9 +1259,7 @@ def main(args):
                             ema_adapter.store(t2iadapter.parameters())
                             ema_adapter.copy_to(t2iadapter.parameters())
 
-                        image_logs = log_validation(
-                            vae, unet, t2iadapter, args, accelerator, weight_dtype, global_step
-                        )
+                        log_validation(vae, unet, t2iadapter, args, accelerator, weight_dtype, global_step)
 
                         # Switch back to the original UNet parameters.
                         if args.use_ema:
