@@ -149,10 +149,10 @@ class Text2ImageDataset:
         def get_orig_size(json):
             return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
 
-        openpose = OpenposeDetector.from_pretrained('lllyasviel/ControlNet')
+        openpose = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
 
         def select(d):
-            input_image = d['control_image']
+            input_image = d["control_image"]
             input_image = np.array(input_image, dtype=np.uint8)
 
             input_image = HWC3(input_image)
@@ -160,7 +160,7 @@ class Text2ImageDataset:
             poses = openpose.detect_poses(input_image)
 
             at_least_one_pose_found = len(poses) > 0
-            
+
             return at_least_one_pose_found
 
         def image_transform(example):
@@ -671,12 +671,6 @@ def parse_args(input_args=None):
         default=False,
         help="Whether or not to use non-uniform timesteps.",
     )
-    parser.add_argument(
-        "--adapter_in_channels",
-        type=int,
-        default=1,
-        help="Number of channels of the adapter input.",
-    )
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -835,7 +829,9 @@ def main(args):
 
     # Create EMA for the adapter.
     if args.use_ema:
-        ema_adapter = EMAModel(t2iadapter.parameters(), model_cls=T2IAdapter, model_config=t2iadapter.config, inv_gamma=1, power=3/4)
+        ema_adapter = EMAModel(
+            t2iadapter.parameters(), model_cls=T2IAdapter, model_config=t2iadapter.config, inv_gamma=1, power=3 / 4
+        )
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -1294,6 +1290,7 @@ def main(args):
             t2iadapter.save_pretrained(os.path.join(args.output_dir, "t2iadapter_ema"))
 
     accelerator.end_training()
+
 
 if __name__ == "__main__":
     args = parse_args()
