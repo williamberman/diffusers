@@ -73,8 +73,6 @@ from controlnet_aux.open_pose import draw_poses
 import numpy as np
 from controlnet_aux.util import HWC3, resize_image
 
-torch.multiprocessing.set_start_method("spawn")
-
 MAX_SEQ_LENGTH = 77
 
 if is_wandb_available():
@@ -86,11 +84,9 @@ check_min_version("0.18.0.dev0")
 logger = get_logger(__name__)
 
 
-def filter_keys(key_set):
-    def _f(dictionary):
-        return {k: v for k, v in dictionary.items() if k in key_set}
-
-    return _f
+def filter_keys(dictionary):
+    key_set = {"image", "control_image", "text", "orig_size"}
+    return {k: v for k, v in dictionary.items() if k in key_set}
 
 
 def group_by_keys_nothrow(data, keys=base_plus_ext, lcase=True, suffixes=None, handler=None):
@@ -128,6 +124,75 @@ def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
     samples = group_by_keys_nothrow(files, handler=handler)
     return samples
 
+def get_orig_size(json):
+    return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
+
+openpose = None
+
+def run_openpose(input_image):
+    # TODO
+    # resolution = args.resolution
+    resolution = 256
+
+    global openpose
+    if openpose is None:
+        openpose = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
+        openpose.to('cuda') # TODO
+
+    if not isinstance(input_image, np.ndarray):
+        input_image = np.array(input_image, dtype=np.uint8)
+
+    input_image = HWC3(input_image)
+    input_image = resize_image(input_image, resolution)
+    H, W, C = input_image.shape
+
+    poses = openpose.detect_poses(input_image, include_hand=False, include_face=False)
+
+    if len(poses) == 0:
+        return None
+
+    canvas = draw_poses(poses, H, W, draw_body=True, draw_hand=False, draw_face=False)
+
+    detected_map = canvas
+    detected_map = HWC3(detected_map)
+
+    img = resize_image(input_image, resolution)
+    H, W, C = img.shape
+
+    detected_map = cv2.resize(detected_map, (W, H), interpolation=cv2.INTER_LINEAR)
+
+    detected_map = Image.fromarray(detected_map)
+
+    return detected_map
+
+
+def image_transform(example):
+    # TODO
+    # resolution = args.resolution
+    resolution = 256
+
+    image = example["image"]
+    image = TF.resize(image, resolution, interpolation=transforms.InterpolationMode.BILINEAR)
+
+    # get crop coordinates
+    c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
+    image = TF.crop(image, c_top, c_left, resolution, resolution)
+
+    control_image = run_openpose(image)
+    if control_image is not None:
+        control_image = TF.to_tensor(control_image)
+
+    image = TF.to_tensor(image)
+    image = TF.normalize(image, [0.5], [0.5])
+
+    example["image"] = image
+    example["control_image"] = control_image
+    example["crop_coords"] = (c_top, c_left)
+
+    return example
+
+def select_control_image_not_none(d):
+    return d['control_image'] is not None
 
 class Text2ImageDataset:
     def __init__(
@@ -140,67 +205,11 @@ class Text2ImageDataset:
         shuffle_buffer_size: int = 1000,
         pin_memory: bool = False,
         persistent_workers: bool = False,
-        resolution: int = 256,
-        device="cpu",
     ):
         if not isinstance(train_shards_path_or_url, str):
             train_shards_path_or_url = [list(braceexpand(urls)) for urls in train_shards_path_or_url]
             # flatten list using itertools
             train_shards_path_or_url = list(itertools.chain.from_iterable(train_shards_path_or_url))
-
-        def get_orig_size(json):
-            return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
-
-        openpose = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
-        openpose.to(device)
-
-        def run_openpose(input_image):
-            if not isinstance(input_image, np.ndarray):
-                input_image = np.array(input_image, dtype=np.uint8)
-
-            input_image = HWC3(input_image)
-            input_image = resize_image(input_image, resolution)
-            H, W, C = input_image.shape
-
-            poses = openpose.detect_poses(input_image, include_hand=False, include_face=False)
-
-            if len(poses) == 0:
-                return None
-
-            canvas = draw_poses(poses, H, W, draw_body=True, draw_hand=False, draw_face=False)
-
-            detected_map = canvas
-            detected_map = HWC3(detected_map)
-
-            img = resize_image(input_image, resolution)
-            H, W, C = img.shape
-
-            detected_map = cv2.resize(detected_map, (W, H), interpolation=cv2.INTER_LINEAR)
-
-            detected_map = Image.fromarray(detected_map)
-
-            return detected_map
-
-        def image_transform(example):
-            image = example["image"]
-            image = TF.resize(image, resolution, interpolation=transforms.InterpolationMode.BILINEAR)
-
-            # get crop coordinates
-            c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
-            image = TF.crop(image, c_top, c_left, resolution, resolution)
-
-            control_image = run_openpose(image)
-            if control_image is not None:
-                control_image = TF.to_tensor(control_image)
-
-            image = TF.to_tensor(image)
-            image = TF.normalize(image, [0.5], [0.5])
-
-            example["image"] = image
-            example["control_image"] = control_image
-            example["crop_coords"] = (c_top, c_left)
-
-            return example
 
         processing_pipeline = [
             wds.decode("pil", handler=wds.ignore_and_continue),
@@ -211,10 +220,10 @@ class Text2ImageDataset:
                 orig_size="json",
                 handler=wds.warn_and_continue,
             ),
-            wds.map(filter_keys({"image", "control_image", "text", "orig_size"})),
+            wds.map(filter_keys),
             wds.map_dict(orig_size=get_orig_size),
             wds.map(image_transform),
-            wds.select(lambda d: d["control_image"] is not None),
+            wds.select(select_control_image_not_none),
             wds.to_tuple("image", "control_image", "text", "orig_size", "crop_coords"),
         ]
 
@@ -1034,8 +1043,6 @@ def main(args):
         shuffle_buffer_size=1000,
         pin_memory=True,
         persistent_workers=True,
-        resolution=args.resolution,
-        device=accelerator.device,
     )
     train_dataloader = dataset.train_dataloader
 
@@ -1315,5 +1322,6 @@ def main(args):
 
 
 if __name__ == "__main__":
+    torch.multiprocessing.set_start_method("spawn")
     args = parse_args()
     main(args)
