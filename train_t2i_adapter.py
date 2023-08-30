@@ -297,21 +297,29 @@ def log_validation(vae, unet, adapter, args, accelerator, weight_dtype, step):
     validation_prompts = args.validation_prompt
 
     image_logs = []
+    validation_images = [Image.open(x).convert("RGB") for x in validation_images]
 
-    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
-        validation_image = Image.open(validation_image)
-        validation_image = validation_image.convert("RGB")
-        # validation_image = validation_image.resize((args.resolution, args.resolution))
+    with torch.autocast("cuda"):
+        output_validation_images = pipeline(
+            prompt=validation_prompts,
+            image=validation_images,
+            generator=generator,
+            num_images_per_prompt=args.num_validation_images,
+        ).images
 
-        images = []
+    for i, validation_prompt in enumerate(validation_prompts):
+        validation_image = validation_images[i]
 
-        for _ in range(args.num_validation_images):
-            with torch.autocast("cuda"):
-                image = pipeline(prompt=validation_prompt, image=validation_image, generator=generator).images[0]
-            images.append(image)
+        output_validation_images_ = output_validation_images[
+            i * args.num_validation_images : i * args.num_validation_images + args.num_validation_images
+        ]
 
         image_logs.append(
-            {"validation_image": validation_image, "images": images, "validation_prompt": validation_prompt}
+            {
+                "validation_image": validation_image,
+                "images": output_validation_images_,
+                "validation_prompt": validation_prompt,
+            }
         )
 
     for tracker in accelerator.trackers:
