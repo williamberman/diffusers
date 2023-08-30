@@ -17,18 +17,17 @@ import argparse
 import functools
 import gc
 import itertools
-import json
 import logging
 import math
 import os
 import random
 import shutil
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Union
+import time
 
 import accelerate
 import cv2
-import matplotlib
 import matplotlib.cm
 import numpy as np
 import torch
@@ -70,9 +69,11 @@ from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 from PIL import Image
 from controlnet_aux import OpenposeDetector
+from controlnet_aux.open_pose import draw_poses
 import numpy as np
 from controlnet_aux.util import HWC3, resize_image
 
+torch.multiprocessing.set_start_method("spawn")
 
 MAX_SEQ_LENGTH = 77
 
@@ -140,6 +141,7 @@ class Text2ImageDataset:
         pin_memory: bool = False,
         persistent_workers: bool = False,
         resolution: int = 256,
+        device="cpu",
     ):
         if not isinstance(train_shards_path_or_url, str):
             train_shards_path_or_url = [list(braceexpand(urls)) for urls in train_shards_path_or_url]
@@ -150,18 +152,34 @@ class Text2ImageDataset:
             return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
 
         openpose = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
+        openpose.to(device)
 
-        def select(d):
-            input_image = d["control_image"]
-            input_image = np.array(input_image, dtype=np.uint8)
+        def run_openpose(input_image):
+            if not isinstance(input_image, np.ndarray):
+                input_image = np.array(input_image, dtype=np.uint8)
 
             input_image = HWC3(input_image)
             input_image = resize_image(input_image, resolution)
-            poses = openpose.detect_poses(input_image)
+            H, W, C = input_image.shape
 
-            at_least_one_pose_found = len(poses) > 0
+            poses = openpose.detect_poses(input_image, include_hand=False, include_face=False)
 
-            return at_least_one_pose_found
+            if len(poses) == 0:
+                return None
+
+            canvas = draw_poses(poses, H, W, draw_body=True, draw_hand=False, draw_face=False)
+
+            detected_map = canvas
+            detected_map = HWC3(detected_map)
+
+            img = resize_image(input_image, resolution)
+            H, W, C = img.shape
+
+            detected_map = cv2.resize(detected_map, (W, H), interpolation=cv2.INTER_LINEAR)
+
+            detected_map = Image.fromarray(detected_map)
+
+            return detected_map
 
         def image_transform(example):
             image = example["image"]
@@ -171,11 +189,12 @@ class Text2ImageDataset:
             c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
             image = TF.crop(image, c_top, c_left, resolution, resolution)
 
-            control_image = openpose(image, detect_resolution=resolution, image_resolution=resolution)
+            control_image = run_openpose(image)
+            if control_image is not None:
+                control_image = TF.to_tensor(control_image)
 
             image = TF.to_tensor(image)
             image = TF.normalize(image, [0.5], [0.5])
-            control_image = TF.to_tensor(control_image)
 
             example["image"] = image
             example["control_image"] = control_image
@@ -193,9 +212,9 @@ class Text2ImageDataset:
                 handler=wds.warn_and_continue,
             ),
             wds.map(filter_keys({"image", "control_image", "text", "orig_size"})),
-            wds.select(select),
             wds.map_dict(orig_size=get_orig_size),
             wds.map(image_transform),
+            wds.select(lambda d: d["control_image"] is not None),
             wds.to_tuple("image", "control_image", "text", "orig_size", "crop_coords"),
         ]
 
@@ -221,6 +240,7 @@ class Text2ImageDataset:
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
+            prefetch_factor=8,
         )
         # add meta-data to dataloader instance for convenience
         self._train_dataloader.num_batches = num_batches
@@ -1015,6 +1035,7 @@ def main(args):
         pin_memory=True,
         persistent_workers=True,
         resolution=args.resolution,
+        device=accelerator.device,
     )
     train_dataloader = dataset.train_dataloader
 
@@ -1120,8 +1141,17 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
+    step = 0
+    train_dataloader = iter(train_dataloader)
+
     for epoch in range(first_epoch, args.num_train_epochs):
-        for step, batch in enumerate(train_dataloader):
+        while True:
+            step += 1
+
+            t0 = time.perf_counter()
+            batch = next(train_dataloader)
+            print(f"time for batch: {time.perf_counter() - t0}")
+
             with accelerator.accumulate(t2iadapter):
                 image, control_image, text, orig_size, crop_coords = batch
 
