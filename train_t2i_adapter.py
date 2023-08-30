@@ -22,17 +22,21 @@ import math
 import os
 import random
 import shutil
+import time
 from pathlib import Path
 from typing import List, Union
-import time
 
-import accelerate
-import cv2
-import matplotlib.cm
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+from torch.utils.data import default_collate
+
+import accelerate
+import cv2
+import diffusers
+import matplotlib.cm
+import mediapipe as mp
 import torchvision.transforms.functional as TF
 import transformers
 import webdataset as wds
@@ -40,21 +44,9 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from braceexpand import braceexpand
-from huggingface_hub import create_repo, upload_folder
-from packaging import version
-from PIL import Image
-from torch.utils.data import default_collate
-from torchvision import transforms
-from tqdm.auto import tqdm
-from transformers import AutoTokenizer, DPTFeatureExtractor, DPTForDepthEstimation, PretrainedConfig
-from webdataset.tariterators import (
-    base_plus_ext,
-    tar_file_expander,
-    url_opener,
-    valid_sample,
-)
-
-import diffusers
+from controlnet_aux import OpenposeDetector
+from controlnet_aux.open_pose import draw_poses
+from controlnet_aux.util import HWC3, resize_image
 from diffusers import (
     AutoencoderKL,
     ControlNetModel,
@@ -67,11 +59,18 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
+from huggingface_hub import create_repo, upload_folder
+from mediapipe import solutions
+from mediapipe.framework.formats import landmark_pb2
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+from packaging import version
 from PIL import Image
-from controlnet_aux import OpenposeDetector
-from controlnet_aux.open_pose import draw_poses
-import numpy as np
-from controlnet_aux.util import HWC3, resize_image
+from torchvision import transforms
+from tqdm.auto import tqdm
+from transformers import AutoTokenizer, DPTFeatureExtractor, DPTForDepthEstimation, PretrainedConfig
+from webdataset.tariterators import base_plus_ext, tar_file_expander, url_opener, valid_sample
+
 
 MAX_SEQ_LENGTH = 77
 
@@ -129,44 +128,45 @@ def get_orig_size(json):
     return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
 
 
-openpose = None
+def draw_landmarks_on_image(pose, pose_landmarks):
+    for idx in range(len(pose_landmarks)):
+        pose_landmarks = pose_landmarks[idx]
+
+        pose_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
+        pose_landmarks_proto.landmark.extend(
+            [landmark_pb2.NormalizedLandmark(x=landmark.x, y=landmark.y, z=landmark.z) for landmark in pose_landmarks]
+        )
+        solutions.drawing_utils.draw_landmarks(
+            pose,
+            pose_landmarks_proto,
+            solutions.pose.POSE_CONNECTIONS,
+            solutions.drawing_styles.get_default_pose_landmarks_style(),
+        )
 
 
-def run_openpose(input_image):
-    # TODO
-    # resolution = args.resolution
-    resolution = 256
+detector = None
 
-    global openpose
-    if openpose is None:
-        openpose = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
-        openpose.to(f"cuda:{random.randint(0, 7)}")  # Lord forgive me for I have sinned
 
-    if not isinstance(input_image, np.ndarray):
-        input_image = np.array(input_image, dtype=np.uint8)
+def make_pose(input_image):
+    global detector
+    if detector is None:
+        base_options = python.BaseOptions(model_asset_path="pose_landmarker.task")
+        options = vision.PoseLandmarkerOptions(base_options=base_options, output_segmentation_masks=False)
+        detector = vision.PoseLandmarker.create_from_options(options)
 
-    input_image = HWC3(input_image)
-    input_image = resize_image(input_image, resolution)
-    H, W, C = input_image.shape
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.asarray(input_image))
+    detection_result = detector.detect(mp_image)
+    pose_landmarks = detection_result.pose_landmarks
 
-    poses = openpose.detect_poses(input_image, include_hand=False, include_face=False)
-
-    if len(poses) == 0:
+    if len(pose_landmarks) == 0:
         return None
 
-    canvas = draw_poses(poses, H, W, draw_body=True, draw_hand=False, draw_face=False)
+    pose = np.zeros((input_image.height, input_image.width, 3), dtype=np.uint8)
+    draw_landmarks_on_image(pose, pose_landmarks)
 
-    detected_map = canvas
-    detected_map = HWC3(detected_map)
+    pose = Image.fromarray(pose)
 
-    img = resize_image(input_image, resolution)
-    H, W, C = img.shape
-
-    detected_map = cv2.resize(detected_map, (W, H), interpolation=cv2.INTER_LINEAR)
-
-    detected_map = Image.fromarray(detected_map)
-
-    return detected_map
+    return pose
 
 
 def image_transform(example):
@@ -181,7 +181,7 @@ def image_transform(example):
     c_top, c_left, _, _ = transforms.RandomCrop.get_params(image, output_size=(resolution, resolution))
     image = TF.crop(image, c_top, c_left, resolution, resolution)
 
-    control_image = run_openpose(image)
+    control_image = make_pose(image)
     if control_image is not None:
         control_image = TF.to_tensor(control_image)
 
@@ -902,10 +902,19 @@ def main(args):
         accelerator.register_load_state_pre_hook(load_model_hook)
 
     vae.requires_grad_(False)
+    vae.train(False)
+
     text_encoder_one.requires_grad_(False)
+    text_encoder_one.train(False)
+
     text_encoder_two.requires_grad_(False)
+    text_encoder_two.train(False)
+
     t2iadapter.train()
-    unet.train()
+    t2iadapter.requires_grad_(True)
+
+    unet.train(False)
+    unet.requires_grad_(False)
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -1318,6 +1327,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    torch.multiprocessing.set_start_method("spawn")
     args = parse_args()
     main(args)
