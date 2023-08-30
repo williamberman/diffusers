@@ -124,10 +124,13 @@ def tarfile_to_samples_nothrow(src, handler=wds.warn_and_continue):
     samples = group_by_keys_nothrow(files, handler=handler)
     return samples
 
+
 def get_orig_size(json):
     return (int(json.get("original_width", 0.0)), int(json.get("original_height", 0.0)))
 
+
 openpose = None
+
 
 def run_openpose(input_image):
     # TODO
@@ -137,7 +140,7 @@ def run_openpose(input_image):
     global openpose
     if openpose is None:
         openpose = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
-        openpose.to('cuda') # TODO
+        openpose.to(f"cuda:{random.randint(0, 7)}")  # Lord forgive me for I have sinned
 
     if not isinstance(input_image, np.ndarray):
         input_image = np.array(input_image, dtype=np.uint8)
@@ -191,8 +194,10 @@ def image_transform(example):
 
     return example
 
+
 def select_control_image_not_none(d):
-    return d['control_image'] is not None
+    return d["control_image"] is not None
+
 
 class Text2ImageDataset:
     def __init__(
@@ -1148,17 +1153,8 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    step = 0
-    train_dataloader = iter(train_dataloader)
-
     for epoch in range(first_epoch, args.num_train_epochs):
-        while True:
-            step += 1
-
-            t0 = time.perf_counter()
-            batch = next(train_dataloader)
-            print(f"time for batch: {time.perf_counter() - t0}")
-
+        for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(t2iadapter):
                 image, control_image, text, orig_size, crop_coords = batch
 
