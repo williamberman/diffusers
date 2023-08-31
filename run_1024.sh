@@ -21,4 +21,4 @@ accelerate launch train_t2i_adapter.py \
     --use_8bit_adam \
     --use_euler \
     --use_ema \
-    --num_validation_images 2
+    --num_validation_images 1

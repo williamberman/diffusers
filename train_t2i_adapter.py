@@ -291,18 +291,22 @@ def log_validation(vae, unet, adapter, args, accelerator, weight_dtype, step):
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
 
     validation_images = [os.path.join(args.validation_image, f"{i}.png") for i in range(len(args.validation_prompt))]
+    validation_images = [Image.open(x).convert("RGB") for x in validation_images]
+
     validation_prompts = args.validation_prompt
 
     image_logs = []
-    validation_images = [Image.open(x).convert("RGB") for x in validation_images]
 
-    with torch.autocast("cuda"):
-        output_validation_images = pipeline(
-            prompt=validation_prompts,
-            image=validation_images,
-            generator=generator,
-            num_images_per_prompt=args.num_validation_images,
-        ).images
+    output_validation_images = []
+
+    for validation_prompt, validation_image in zip(validation_prompts, validation_images):
+        with torch.autocast("cuda"):
+            output_validation_images += pipeline(
+                prompt=validation_prompt,
+                image=validation_image,
+                generator=generator,
+                num_images_per_prompt=args.num_validation_images,
+            ).images
 
     for i, validation_prompt in enumerate(validation_prompts):
         validation_image = validation_images[i]
