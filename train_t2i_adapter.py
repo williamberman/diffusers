@@ -169,11 +169,7 @@ def make_pose(input_image):
     return pose
 
 
-def image_transform(example):
-    # TODO
-    # resolution = args.resolution
-    resolution = 256
-
+def image_transform(example, resolution):
     image = example["image"]
     image = TF.resize(image, resolution, interpolation=transforms.InterpolationMode.BILINEAR)
 
@@ -210,6 +206,7 @@ class Text2ImageDataset:
         shuffle_buffer_size: int = 1000,
         pin_memory: bool = False,
         persistent_workers: bool = False,
+        resolution = 1024
     ):
         if not isinstance(train_shards_path_or_url, str):
             train_shards_path_or_url = [list(braceexpand(urls)) for urls in train_shards_path_or_url]
@@ -227,7 +224,7 @@ class Text2ImageDataset:
             ),
             wds.map(filter_keys),
             wds.map_dict(orig_size=get_orig_size),
-            wds.map(image_transform),
+            wds.map(lambda x: image_transform(x, resolution)),
             wds.select(select_control_image_not_none),
             wds.to_tuple("image", "control_image", "text", "orig_size", "crop_coords"),
         ]
@@ -1065,6 +1062,7 @@ def main(args):
         shuffle_buffer_size=1000,
         pin_memory=True,
         persistent_workers=True,
+        resolution=args.resolution,
     )
     train_dataloader = dataset.train_dataloader
 
