@@ -3,7 +3,7 @@ accelerate launch train_t2i_adapter.py \
     --pretrained_vae_model_name_or_path=madebyollin/sdxl-vae-fp16-fix \
     --mixed_precision=fp16 \
     --resolution=256 \
-    --learning_rate=6e-5 \
+    --learning_rate=1e-5 \
     --max_train_steps=50000 \
     --max_train_samples=3000000 \
     --dataloader_num_workers=8 \
@@ -11,7 +11,7 @@ accelerate launch train_t2i_adapter.py \
     --validation_prompt "spiderman, high quality, 4k" "the dalai lama, high quality, 4k" "elon musk, high quality, 4k" "a lumberjack, high quality 4k" \
     --train_shards_path_or_url='pipe:aws s3 cp s3://muse-datasets/laion-aesthetic6plus-min512-data/{00000..01210}.tar -' \
     --proportion_empty_prompts=0.05 \
-    --validation_steps=100 \
+    --validation_steps=500 \
     --train_batch_size=32 \
     --gradient_checkpointing \
     --enable_xformers_memory_efficient_attention \
