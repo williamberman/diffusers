@@ -933,7 +933,7 @@ def main(args):
 
                 mask = batch["mask"].to(accelerator.device)
 
-                masked_pixel_values = pixel_values * ~mask
+                masked_pixel_values = (pixel_values * 2 - 1) * (mask < 0.5)
 
                 time_ids = batch["time_ids"].to(accelerator.device, dtype=weight_dtype)
 
