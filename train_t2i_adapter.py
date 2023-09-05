@@ -306,6 +306,7 @@ def log_validation(vae, unet, adapter, args, accelerator, weight_dtype, step):
                 image=validation_image,
                 generator=generator,
                 num_images_per_prompt=args.num_validation_images,
+                adapter_conditioning_scale=1.5,
             ).images
 
     for i, validation_prompt in enumerate(validation_prompts):
