@@ -252,6 +252,8 @@
       title: MultiDiffusion
     - local: api/pipelines/musicldm
       title: MusicLDM
+    - local: api/pipelines/open_muse
+      title: OpenMuse
     - local: api/pipelines/paint_by_example
       title: PaintByExample
     - local: api/pipelines/paradigms

@@ -112,6 +112,7 @@ else:
     _import_structure["latent_consistency_models"] = ["LatentConsistencyModelPipeline"]
     _import_structure["latent_diffusion"].extend(["LDMTextToImagePipeline"])
     _import_structure["musicldm"] = ["MusicLDMPipeline"]
+    _import_structure["open_muse"] = ["OpenMuseImg2ImgPipeline", "OpenMuseInpaintPipeline", "OpenMusePipeline"]
     _import_structure["paint_by_example"] = ["PaintByExamplePipeline"]
     _import_structure["semantic_stable_diffusion"] = ["SemanticStableDiffusionPipeline"]
     _import_structure["shap_e"] = ["ShapEImg2ImgPipeline", "ShapEPipeline"]
@@ -335,6 +336,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .latent_consistency_models import LatentConsistencyModelPipeline
         from .latent_diffusion import LDMTextToImagePipeline
         from .musicldm import MusicLDMPipeline
+        from .open_muse import OpenMuseImg2ImgPipeline, OpenMuseInpaintPipeline, OpenMusePipeline
         from .paint_by_example import PaintByExamplePipeline
         from .semantic_stable_diffusion import SemanticStableDiffusionPipeline
         from .shap_e import ShapEImg2ImgPipeline, ShapEPipeline

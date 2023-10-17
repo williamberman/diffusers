@@ -24,7 +24,7 @@ from ..utils import USE_PEFT_BACKEND
 from .activations import get_activation
 from .attention_processor import SpatialNorm
 from .lora import LoRACompatibleConv, LoRACompatibleLinear
-from .normalization import AdaGroupNorm
+from .normalization import AdaGroupNorm, RMSNorm
 
 
 class Upsample1D(nn.Module):
@@ -143,6 +143,13 @@ class Upsample2D(nn.Module):
         use_conv_transpose: bool = False,
         out_channels: Optional[int] = None,
         name: str = "conv",
+        kernel_size: Optional[int] = None,
+        padding=1,
+        norm_type=None,
+        eps=None,
+        elementwise_affine=None,
+        bias=True,
+        interpolate=True,
     ):
         super().__init__()
         self.channels = channels
@@ -150,13 +157,29 @@ class Upsample2D(nn.Module):
         self.use_conv = use_conv
         self.use_conv_transpose = use_conv_transpose
         self.name = name
+        self.interpolate = interpolate
         conv_cls = nn.Conv2d if USE_PEFT_BACKEND else LoRACompatibleConv
+
+        if norm_type == "ln_norm":
+            self.norm = nn.LayerNorm(channels, eps, elementwise_affine)
+        elif norm_type == "rms_norm":
+            self.norm = RMSNorm(channels, eps, elementwise_affine)
+        elif norm_type is None:
+            self.norm = None
+        else:
+            raise ValueError(f"unknown norm_type: {norm_type}")
 
         conv = None
         if use_conv_transpose:
-            conv = nn.ConvTranspose2d(channels, self.out_channels, 4, 2, 1)
+            if kernel_size is None:
+                kernel_size = 4
+            conv = nn.ConvTranspose2d(
+                channels, self.out_channels, kernel_size=kernel_size, stride=2, padding=padding, bias=bias
+            )
         elif use_conv:
-            conv = conv_cls(self.channels, self.out_channels, 3, padding=1)
+            if kernel_size is None:
+                kernel_size = 3
+            conv = conv_cls(self.channels, self.out_channels, kernel_size=kernel_size, padding=padding, bias=bias)
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
         if name == "conv":
@@ -166,6 +189,9 @@ class Upsample2D(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, output_size: Optional[int] = None, scale: float = 1.0):
         assert hidden_states.shape[1] == self.channels
+
+        if self.norm is not None:
+            hidden_states = self.norm(hidden_states.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
 
         if self.use_conv_transpose:
             return self.conv(hidden_states)
@@ -183,10 +209,11 @@ class Upsample2D(nn.Module):
 
         # if `output_size` is passed we force the interpolation output
         # size and do not make use of `scale_factor=2`
-        if output_size is None:
-            hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
-        else:
-            hidden_states = F.interpolate(hidden_states, size=output_size, mode="nearest")
+        if self.interpolate:
+            if output_size is None:
+                hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
+            else:
+                hidden_states = F.interpolate(hidden_states, size=output_size, mode="nearest")
 
         # If the input is bfloat16, we cast back to bfloat16
         if dtype == torch.bfloat16:
@@ -231,6 +258,11 @@ class Downsample2D(nn.Module):
         out_channels: Optional[int] = None,
         padding: int = 1,
         name: str = "conv",
+        kernel_size=3,
+        norm_type=None,
+        eps=None,
+        elementwise_affine=None,
+        bias=True,
     ):
         super().__init__()
         self.channels = channels
@@ -241,8 +273,19 @@ class Downsample2D(nn.Module):
         self.name = name
         conv_cls = nn.Conv2d if USE_PEFT_BACKEND else LoRACompatibleConv
 
+        if norm_type == "ln_norm":
+            self.norm = nn.LayerNorm(channels, eps, elementwise_affine)
+        elif norm_type == "rms_norm":
+            self.norm = RMSNorm(channels, eps, elementwise_affine)
+        elif norm_type is None:
+            self.norm = None
+        else:
+            raise ValueError(f"unknown norm_type: {norm_type}")
+
         if use_conv:
-            conv = conv_cls(self.channels, self.out_channels, 3, stride=stride, padding=padding)
+            conv = conv_cls(
+                self.channels, self.out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias
+            )
         else:
             assert self.channels == self.out_channels
             conv = nn.AvgPool2d(kernel_size=stride, stride=stride)
@@ -258,6 +301,9 @@ class Downsample2D(nn.Module):
 
     def forward(self, hidden_states, scale: float = 1.0):
         assert hidden_states.shape[1] == self.channels
+
+        if self.norm is not None:
+            hidden_states = self.norm(hidden_states.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
 
         if self.use_conv and self.padding == 0:
             pad = (0, 1, 0, 1)

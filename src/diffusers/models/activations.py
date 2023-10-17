@@ -83,11 +83,11 @@ class GEGLU(nn.Module):
         dim_out (`int`): The number of channels in the output.
     """
 
-    def __init__(self, dim_in: int, dim_out: int):
+    def __init__(self, dim_in: int, dim_out: int, bias: bool = True):
         super().__init__()
         linear_cls = LoRACompatibleLinear if not USE_PEFT_BACKEND else nn.Linear
 
-        self.proj = linear_cls(dim_in, dim_out * 2)
+        self.proj = linear_cls(dim_in, dim_out * 2, bias)
 
     def gelu(self, gate: torch.Tensor) -> torch.Tensor:
         if gate.device.type != "mps":

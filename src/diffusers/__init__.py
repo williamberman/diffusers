@@ -88,6 +88,7 @@ else:
             "UNet2DConditionModel",
             "UNet2DModel",
             "UNet3DConditionModel",
+            "UVit2DModel",
             "VQModel",
         ]
     )
@@ -143,6 +144,7 @@ else:
             "KDPM2AncestralDiscreteScheduler",
             "KDPM2DiscreteScheduler",
             "LCMScheduler",
+            "OpenMuseScheduler",
             "PNDMScheduler",
             "RePaintScheduler",
             "SchedulerMixin",
@@ -230,6 +232,9 @@ else:
             "LatentConsistencyModelPipeline",
             "LDMTextToImagePipeline",
             "MusicLDMPipeline",
+            "OpenMuseImg2ImgPipeline",
+            "OpenMuseInpaintPipeline",
+            "OpenMusePipeline",
             "PaintByExamplePipeline",
             "SemanticStableDiffusionPipeline",
             "ShapEImg2ImgPipeline",
@@ -449,6 +454,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
             UNet2DConditionModel,
             UNet2DModel,
             UNet3DConditionModel,
+            UVit2DModel,
             VQModel,
         )
         from .optimization import (
@@ -502,6 +508,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
             KDPM2AncestralDiscreteScheduler,
             KDPM2DiscreteScheduler,
             LCMScheduler,
+            OpenMuseScheduler,
             PNDMScheduler,
             RePaintScheduler,
             SchedulerMixin,
@@ -570,6 +577,9 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
             LatentConsistencyModelPipeline,
             LDMTextToImagePipeline,
             MusicLDMPipeline,
+            OpenMuseImg2ImgPipeline,
+            OpenMuseInpaintPipeline,
+            OpenMusePipeline,
             PaintByExamplePipeline,
             SemanticStableDiffusionPipeline,
             ShapEImg2ImgPipeline,
