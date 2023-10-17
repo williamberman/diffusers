@@ -13,14 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numbers
 from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..utils.import_utils import is_flash_attn_available
 from .activations import get_activation
 from .embeddings import CombinedTimestepLabelEmbeddings, CombinedTimestepSizeEmbeddings
+
+
+if is_flash_attn_available():
+    from flash_attn.ops.rms_norm import rms_norm
 
 
 class AdaLayerNorm(nn.Module):
@@ -146,3 +152,130 @@ class AdaGroupNorm(nn.Module):
         x = F.group_norm(x, self.num_groups, eps=self.eps)
         x = x * (1 + scale) + shift
         return x
+
+
+class AdaLayerNormContinuous(nn.Module):
+    def __init__(
+        self,
+        embedding_dim: int,
+        conditioning_embedding_dim: int,
+        # NOTE: It is a bit weird that the norm layer can be configured to have scale and shift parameters
+        # because the output is immediately scaled and shifted by the projected conditioning embeddings.
+        # Note that AdaLayerNorm does not let the norm layer have scale and shift parameters.
+        # However, this is how it was implemented in the original code, and it's rather likely you should
+        # set `elementwise_affine` to False.
+        elementwise_affine,
+        eps,
+        bias,
+        norm_type="layer_norm",
+    ):
+        super().__init__()
+        self.silu = nn.SiLU()
+        self.linear = nn.Linear(conditioning_embedding_dim, embedding_dim * 2, bias=bias)
+        if norm_type == "layer_norm":
+            self.norm = LayerNorm(embedding_dim, eps, elementwise_affine, bias)
+        elif norm_type == "rms_norm":
+            self.norm = RMSNorm(embedding_dim, eps, elementwise_affine)
+        else:
+            raise ValueError(f"unknown norm_type {norm_type}")
+
+    def forward(self, x: torch.Tensor, conditioning_embedding: torch.Tensor) -> torch.Tensor:
+        emb = self.linear(self.silu(conditioning_embedding))
+        scale, shift = torch.chunk(emb, 2, dim=1)
+        x = self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return x
+
+
+# Has optional bias parameter compared to torch layer norm
+# TODO: replace with torch layernorm once min required torch version >= 2.1
+class LayerNorm(nn.Module):
+    def __init__(self, dim, eps: float, elementwise_affine: bool, bias: bool):
+        super().__init__()
+
+        self.eps = eps
+
+        if isinstance(dim, numbers.Integral):
+            dim = (dim,)
+
+        self.dim = torch.Size(dim)
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(dim))
+            self.bias = nn.Parameter(torch.zeros(dim)) if bias else None
+        else:
+            self.weight = None
+            self.bias = None
+
+    def forward(self, input):
+        return F.layer_norm(input, self.dim, self.weight, self.bias, self.eps)
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps: float, elementwise_affine: bool):
+        super().__init__()
+
+        self.eps = eps
+
+        if isinstance(dim, numbers.Integral):
+            dim = (dim,)
+
+        self.dim = torch.Size(dim)
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(dim))
+        else:
+            self.weight = None
+
+        self.use_fused_rms_norm = False
+
+    def set_use_fused_rms_norm(self, use_fused_rms_norm: bool):
+        if use_fused_rms_norm:
+            if not is_flash_attn_available():
+                raise ModuleNotFoundError(
+                    """
+                    fused rms norm not installed from flash attention package
+
+                    First install flash attention, following the instructions in the README:
+                    https://github.com/Dao-AILab/flash-attention#installation-and-features
+
+                    Then install the layer_norm package (which can also be used for RMS Norm kernels):
+                    ```sh
+                    $ git clone https://github.com/Dao-AILab/flash-attention
+                    $ cd flash-attention/csrc/layer_norm
+                    $ pip install .
+                    ```
+                    """
+                )
+
+        self.use_fused_rms_norm = use_fused_rms_norm
+
+    def forward(self, hidden_states):
+        if self.use_fused_rms_norm:
+            return rms_norm(hidden_states, self.weight, self.eps)
+
+        input_dtype = hidden_states.dtype
+        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
+
+        if self.weight is not None:
+            # convert into half-precision if necessary
+            if self.weight.dtype in [torch.float16, torch.bfloat16]:
+                hidden_states = hidden_states.to(self.weight.dtype)
+            hidden_states = hidden_states * self.weight
+        else:
+            hidden_states = hidden_states.to(input_dtype)
+
+        return hidden_states
+
+
+class GlobalResponseNorm(nn.Module):
+    # Taken from https://github.com/facebookresearch/ConvNeXt-V2/blob/3608f67cc1dae164790c5d0aead7bf2d73d9719b/models/utils.py#L105
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, 1, 1, dim))
+        self.beta = nn.Parameter(torch.zeros(1, 1, 1, dim))
+
+    def forward(self, x):
+        gx = torch.norm(x, p=2, dim=(1, 2), keepdim=True)
+        nx = gx / (gx.mean(dim=-1, keepdim=True) + 1e-6)
+        return self.gamma * (x * nx) + self.beta + x

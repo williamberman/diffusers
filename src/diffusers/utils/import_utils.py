@@ -285,6 +285,14 @@ except importlib_metadata.PackageNotFoundError:
     _peft_available = False
 
 
+_flash_attn_available = importlib.util.find_spec("flash_attn") is not None
+try:
+    _flash_attn_available = importlib_metadata.version("flash_attn")
+    logger.debug(f"Successfully imported flash attn version {_flash_attn_available}")
+except importlib_metadata.PackageNotFoundError:
+    _flash_attn_available = False
+
+
 def is_torch_available():
     return _torch_available
 
@@ -375,6 +383,10 @@ def is_invisible_watermark_available():
 
 def is_peft_available():
     return _peft_available
+
+
+def is_flash_attn_available():
+    return _flash_attn_available
 
 
 # docstyle-ignore
