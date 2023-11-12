@@ -238,7 +238,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         motion_field_strength_x: float = 12,
         motion_field_strength_y: float = 12,
-        output_type: Optional[str] = "tensor",
+        output_type: Optional[str] = "pil",
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
@@ -329,40 +329,54 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         muse_x_1_t0 = muse_x_1_t1
 
-        # Propagate first frame latents at time T_0 to remaining frames
-        muse_x_2k_t0 = muse_x_1_t0.repeat(video_length - 1, 1)
+        all_frames = [muse_x_1_t0.clone()]
+        self.scheduler.frames = True
 
-        # de-quantize
-        muse_x_2k_t0 = self.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
+        for _ in range(video_length-1):
+            muse_x_2k_t0 = all_frames[-1].clone()
 
-        # warp
-        muse_x_2k_t0 = create_motion_field_and_warp_latents(
-            motion_field_strength_x=motion_field_strength_x,
-            motion_field_strength_y=motion_field_strength_y,
-            latents=muse_x_2k_t0,
-            frame_ids=[1],
-        )
+            # de-quantize
+            muse_x_2k_t0 = self.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
 
-        # replace padding with mask
-        padded_indices = (muse_x_2k_t0 == 0).all(dim=1, keepdim=True)
-        masked_embedding = self.vqvae.quantize.embedding.weight[-1]
-        n_channels = muse_x_2k_t0.shape[1]
-        muse_x_2k_t0 = muse_x_2k_t0.permute(0, 2, 3, 1)
-        muse_x_2k_t0[
-            padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)
-        ] = masked_embedding.repeat(padded_indices.sum())
-        muse_x_2k_t0 = muse_x_2k_t0.permute(0, 3, 1, 2)
+            # warp
+            muse_x_2k_t0 = create_motion_field_and_warp_latents(
+                motion_field_strength_x=motion_field_strength_x,
+                motion_field_strength_y=motion_field_strength_y,
+                latents=muse_x_2k_t0,
+                frame_ids=[1],
+            )
 
-        # quantize
-        muse_x_2k_t0 = self.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
+            # replace padding with mask
+            padded_indices = (muse_x_2k_t0 == 0).all(dim=1, keepdim=True)
+            masked_embedding = self.vqvae.quantize.embedding.weight[-1]
+            n_channels = muse_x_2k_t0.shape[1]
+            muse_x_2k_t0 = muse_x_2k_t0.permute(0, 2, 3, 1)
+            muse_x_2k_t0[
+                padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)
+            ] = masked_embedding.repeat(padded_indices.sum())
+            muse_x_2k_t0 = muse_x_2k_t0.permute(0, 3, 1, 2)
 
-        muse_x_2k_t1 = muse_x_2k_t0
+            # quantize
+            muse_x_2k_t0 = self.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
 
-        muse_x_1k_t1 = torch.cat([muse_x_1_t1, muse_x_2k_t1])
+            muse_x_2k_t0 = self.scheduler.add_noise(muse_x_2k_t0, 1, generator=torch.Generator('cuda').manual_seed(0))
 
-        muse_x_1k_0 = muse_x_1k_t1
+            self.scheduler.starting_mask_ratio = float((muse_x_2k_t0== 8255).sum()) / float(muse_x_2k_t0.numel())
 
-        latents = muse_x_1k_0
+            muse_x_2k_t0 = self.backward_loop(
+                prompt_embeds=prompt_embeds,
+                micro_conds=micro_conds,
+                encoder_hidden_states=encoder_hidden_states,
+                generator=torch.Generator('cuda').manual_seed(5),
+                latents=muse_x_2k_t0,
+                guidance_scale=guidance_scale,
+                callback=callback,
+                callback_steps=callback_steps,
+            )
+
+            all_frames.append(muse_x_2k_t0)
+
+        latents = torch.concat(all_frames)
 
         muse_image = self.vqvae.decode(
             latents,
@@ -377,6 +391,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         muse_image = self.image_processor.postprocess(muse_image, output_type)
 
         if not return_dict:
-            return (muse_image, latents)
+            return (muse_image,)
 
         return TextToVideoPipelineOutput(images=muse_image)
