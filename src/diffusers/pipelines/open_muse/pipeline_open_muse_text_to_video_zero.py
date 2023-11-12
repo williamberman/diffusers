@@ -31,12 +31,8 @@ class TextToVideoPipelineOutput(BaseOutput):
         images (`[List[PIL.Image.Image]`, `np.ndarray`]):
             List of denoised PIL images of length `batch_size` or NumPy array of shape `(batch_size, height, width,
             num_channels)`.
-        nsfw_content_detected (`[List[bool]]`):
-            List indicating whether the corresponding generated image contains "not-safe-for-work" (nsfw) content or
-            `None` if safety checking could not be performed.
     """
     images: Union[List[PIL.Image.Image], np.ndarray]
-    nsfw_content_detected: Optional[List[bool]]
 
 
 def coords_grid(batch, ht, wd, device):
@@ -349,98 +345,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         if width is None:
             width = self.transformer.config.sample_size * self.vae_scale_factor
 
-        self.scheduler.set_timesteps(muse_num_inference_steps, device=device)
-        muse_timesteps = self.scheduler.timesteps
-
-        if muse_latents is None:
-            muse_latents = torch.full(
-                (1, 1024), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
-            )
-
-        muse_micro_conds, muse_prompt_embeds, muse_encoder_hidden_states = self.muse_setup(prompt, muse_guidance_scale)
-
-        muse_x_1_t1 = self.backward_loop(
-            muse=True,
-            timesteps=muse_t1,
-            muse_prompt_embeds=muse_prompt_embeds,
-            muse_micro_conds=muse_micro_conds,
-            muse_encoder_hidden_states=muse_encoder_hidden_states,
-            muse_generator=muse_generator,
-            latents=muse_latents,
-            guidance_scale=muse_guidance_scale,
-            callback=callback,
-            callback_steps=callback_steps,
-            num_warmup_steps=0,
-        )
-
-        muse_x_1_t0 = muse_x_1_t1
-
-        # Propagate first frame latents at time T_0 to remaining frames
-        muse_x_2k_t0 = muse_x_1_t0.repeat(video_length - 1, 1)
-
-        # de-quantize
-        muse_x_2k_t0 = self.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
-
-        # warp
-        muse_x_2k_t0 = create_motion_field_and_warp_latents(
-            motion_field_strength_x=motion_field_strength_x,
-            motion_field_strength_y=motion_field_strength_y,
-            latents=muse_x_2k_t0,
-            frame_ids=frame_ids[1:],
-        )
-
-        # replace padding with mask
-        padded_indices = (muse_x_2k_t0 == 0).all(dim=1, keepdim=True)
-        masked_embedding = self.vqvae.quantize.embedding.weight[-1]
-        n_channels = muse_x_2k_t0.shape[1]
-        muse_x_2k_t0 = muse_x_2k_t0.permute(0, 2, 3, 1)
-        muse_x_2k_t0[
-            padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)
-        ] = masked_embedding.repeat(padded_indices.sum())
-        muse_x_2k_t0 = muse_x_2k_t0.permute(0, 3, 1, 2)
-
-        # quantize
-        muse_x_2k_t0 = self.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
-
-        muse_x_2k_t1 = muse_x_2k_t0
-
-        muse_x_1k_t1 = torch.cat([muse_x_1_t1, muse_x_2k_t1])
-
-        b, l = muse_prompt_embeds.size()
-        muse_prompt_embeds = muse_prompt_embeds[:, None, :].repeat(1, video_length, 1).reshape(b * video_length, l)
-
-        b, l, d = muse_encoder_hidden_states.size()
-        muse_encoder_hidden_states = muse_encoder_hidden_states[:, None, :, :].repeat(1, video_length, 1, 1).reshape(b * video_length, l, d)
-
-        b, l = muse_micro_conds.size()
-        muse_micro_conds = muse_micro_conds[:, None, :].repeat(1, video_length, 1).reshape(b * video_length, l)
-
-        muse_x_1k_0 = muse_x_1k_t1
-
-        muse_latents = muse_x_1k_0
-
-        muse_image = self.vqvae.decode(
-            muse_latents,
-            force_not_quantize=True,
-            shape=(
-                muse_latents.shape[0],
-                height // self.vae_scale_factor,
-                width // self.vae_scale_factor,
-                self.vqvae.config.latent_channels,
-            ),
-        ).sample
-        muse_image = self.image_processor.postprocess(muse_image, output_type)
-
-        image = None
-        has_nsfw_concept = None
-
-        if not return_dict:
-            return (image, has_nsfw_concept, muse_image, muse_latents)
-
-        return TextToVideoPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
-
-
-    def muse_setup(self, prompt, muse_guidance_scale):
         guidance_scale = muse_guidance_scale
         num_images_per_prompt = 1
         negative_prompt_embeds = None
@@ -505,4 +409,78 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         micro_conds = micro_conds.unsqueeze(0)
         micro_conds = micro_conds.expand(2 * batch_size if guidance_scale > 1.0 else batch_size, -1)
 
-        return micro_conds, prompt_embeds, encoder_hidden_states
+        if muse_latents is None:
+            muse_latents = torch.full(
+                (1, 1024), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
+            )
+
+        self.scheduler.set_timesteps(muse_num_inference_steps, device=device)
+        muse_timesteps = self.scheduler.timesteps
+
+        muse_x_1_t1 = self.backward_loop(
+            muse=True,
+            timesteps=muse_t1,
+            muse_prompt_embeds=prompt_embeds,
+            muse_micro_conds=micro_conds,
+            muse_encoder_hidden_states=encoder_hidden_states,
+            muse_generator=muse_generator,
+            latents=muse_latents,
+            guidance_scale=muse_guidance_scale,
+            callback=callback,
+            callback_steps=callback_steps,
+            num_warmup_steps=0,
+        )
+
+        muse_x_1_t0 = muse_x_1_t1
+
+        # Propagate first frame latents at time T_0 to remaining frames
+        muse_x_2k_t0 = muse_x_1_t0.repeat(video_length - 1, 1)
+
+        # de-quantize
+        muse_x_2k_t0 = self.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
+
+        # warp
+        muse_x_2k_t0 = create_motion_field_and_warp_latents(
+            motion_field_strength_x=motion_field_strength_x,
+            motion_field_strength_y=motion_field_strength_y,
+            latents=muse_x_2k_t0,
+            frame_ids=frame_ids[1:],
+        )
+
+        # replace padding with mask
+        padded_indices = (muse_x_2k_t0 == 0).all(dim=1, keepdim=True)
+        masked_embedding = self.vqvae.quantize.embedding.weight[-1]
+        n_channels = muse_x_2k_t0.shape[1]
+        muse_x_2k_t0 = muse_x_2k_t0.permute(0, 2, 3, 1)
+        muse_x_2k_t0[
+            padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)
+        ] = masked_embedding.repeat(padded_indices.sum())
+        muse_x_2k_t0 = muse_x_2k_t0.permute(0, 3, 1, 2)
+
+        # quantize
+        muse_x_2k_t0 = self.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
+
+        muse_x_2k_t1 = muse_x_2k_t0
+
+        muse_x_1k_t1 = torch.cat([muse_x_1_t1, muse_x_2k_t1])
+
+        muse_x_1k_0 = muse_x_1k_t1
+
+        muse_latents = muse_x_1k_0
+
+        muse_image = self.vqvae.decode(
+            muse_latents,
+            force_not_quantize=True,
+            shape=(
+                muse_latents.shape[0],
+                height // self.vae_scale_factor,
+                width // self.vae_scale_factor,
+                self.vqvae.config.latent_channels,
+            ),
+        ).sample
+        muse_image = self.image_processor.postprocess(muse_image, output_type)
+
+        if not return_dict:
+            return (muse_image, muse_latents)
+
+        return TextToVideoPipelineOutput(images=muse_image)

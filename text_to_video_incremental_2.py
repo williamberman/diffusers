@@ -24,7 +24,7 @@ for motion_field_strength_x in [-15]:
     for t1 in [
         [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
     ]:
-        sd_image, _, muse_image, muse_latents = pipe(
+        muse_image, muse_latents = pipe(
             prompt=prompt, 
             video_length=2,
             motion_field_strength_y=0, 
@@ -49,7 +49,7 @@ for motion_field_strength_x in [-15]:
                 pipe.scheduler.frames = True
                 pipe.scheduler.starting_mask_ratio = float((muse_latents == 8255).sum()) / float(muse_latents.numel())
 
-                sd_image, _, muse_image, muse_latents = pipe(
+                muse_image, muse_latents = pipe(
                     prompt=prompt, 
                     video_length=2,
                     motion_field_strength_y=0, 
@@ -61,7 +61,6 @@ for motion_field_strength_x in [-15]:
                 )
 
                 all_gif_frames.append(muse_image[0])
-
 
             muse_image = [to_im(x) for x in all_gif_frames]
             muse_image[0].save(f"muse_text_to_video_incremental_2_motion_field_x_{motion_field_strength_x}_t1_{t1}_seed_{seed}.gif", save_all=True, append_images=muse_image[1:], duration=150, loop=0)
