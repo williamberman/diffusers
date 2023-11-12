@@ -1,4 +1,3 @@
-import copy
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Union
 
@@ -7,11 +6,8 @@ import PIL.Image
 import torch
 import torch.nn.functional as F
 from torch.nn.functional import grid_sample
-from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTokenizer
 
-from diffusers.models import AutoencoderKL, UNet2DConditionModel
-from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline, StableDiffusionSafetyChecker
-from diffusers.schedulers import KarrasDiffusionSchedulers
 from diffusers.utils import BaseOutput
 import ipdb
 from diffusers import DiffusionPipeline
@@ -23,8 +19,7 @@ from transformers import CLIPTextModelWithProjection, CLIPTokenizer
 from ...image_processor import VaeImageProcessor
 from ...models import UVit2DModel, VQModel
 from ...schedulers import OpenMuseScheduler
-from ...utils import replace_example_docstring
-from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from ..pipeline_utils import DiffusionPipeline
 
 
 @dataclass
@@ -161,12 +156,10 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         self,
         latents,
         timesteps,
-        prompt_embeds,
         guidance_scale,
         callback,
         callback_steps,
         num_warmup_steps,
-        extra_step_kwargs,
         cross_attention_kwargs=None,
         muse_prompt_embeds=None,
         muse_micro_conds=None,
@@ -210,7 +203,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         assert muse_micro_conds is not None
         assert muse_encoder_hidden_states is not None
         assert muse_generator is not None
-        self = self.muse_pipe
         extra_step_kwargs = {"generator": muse_generator}
 
         do_classifier_free_guidance = guidance_scale > 1.0
@@ -352,29 +344,24 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         device = self._execution_device
 
         if height is None:
-            height = self.muse_pipe.transformer.config.sample_size * self.muse_pipe.vae_scale_factor
+            height = self.transformer.config.sample_size * self.vae_scale_factor
 
         if width is None:
-            width = self.muse_pipe.transformer.config.sample_size * self.muse_pipe.vae_scale_factor
+            width = self.transformer.config.sample_size * self.vae_scale_factor
 
-        self.muse_pipe.scheduler.set_timesteps(muse_num_inference_steps, device=device)
-        muse_timesteps = self.muse_pipe.scheduler.timesteps
-
-        # Prepare extra step kwargs.
-        extra_step_kwargs = {}
+        self.scheduler.set_timesteps(muse_num_inference_steps, device=device)
+        muse_timesteps = self.scheduler.timesteps
 
         if muse_latents is None:
             muse_latents = torch.full(
-                (1, 1024), self.muse_pipe.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
+                (1, 1024), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
             )
 
         muse_micro_conds, muse_prompt_embeds, muse_encoder_hidden_states = self.muse_setup(prompt, muse_guidance_scale)
 
         muse_x_1_t1 = self.backward_loop(
             muse=True,
-            # timesteps=muse_timesteps[: -muse_t1 - 1],
             timesteps=muse_t1,
-            prompt_embeds=None,
             muse_prompt_embeds=muse_prompt_embeds,
             muse_micro_conds=muse_micro_conds,
             muse_encoder_hidden_states=muse_encoder_hidden_states,
@@ -383,7 +370,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             guidance_scale=muse_guidance_scale,
             callback=callback,
             callback_steps=callback_steps,
-            extra_step_kwargs=extra_step_kwargs,
             num_warmup_steps=0,
         )
 
@@ -393,7 +379,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         muse_x_2k_t0 = muse_x_1_t0.repeat(video_length - 1, 1)
 
         # de-quantize
-        muse_x_2k_t0 = self.muse_pipe.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.muse_pipe.vae_scale_factor, width // self.muse_pipe.vae_scale_factor, self.muse_pipe.vqvae.latent_channels))
+        muse_x_2k_t0 = self.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
 
         # warp
         muse_x_2k_t0 = create_motion_field_and_warp_latents(
@@ -405,7 +391,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         # replace padding with mask
         padded_indices = (muse_x_2k_t0 == 0).all(dim=1, keepdim=True)
-        masked_embedding = self.muse_pipe.vqvae.quantize.embedding.weight[-1]
+        masked_embedding = self.vqvae.quantize.embedding.weight[-1]
         n_channels = muse_x_2k_t0.shape[1]
         muse_x_2k_t0 = muse_x_2k_t0.permute(0, 2, 3, 1)
         muse_x_2k_t0[
@@ -414,7 +400,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         muse_x_2k_t0 = muse_x_2k_t0.permute(0, 3, 1, 2)
 
         # quantize
-        muse_x_2k_t0 = self.muse_pipe.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
+        muse_x_2k_t0 = self.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
 
         muse_x_2k_t1 = muse_x_2k_t0
 
@@ -433,17 +419,17 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         muse_latents = muse_x_1k_0
 
-        muse_image = self.muse_pipe.vqvae.decode(
+        muse_image = self.vqvae.decode(
             muse_latents,
             force_not_quantize=True,
             shape=(
                 muse_latents.shape[0],
-                height // self.muse_pipe.vae_scale_factor,
-                width // self.muse_pipe.vae_scale_factor,
-                self.muse_pipe.vqvae.config.latent_channels,
+                height // self.vae_scale_factor,
+                width // self.vae_scale_factor,
+                self.vqvae.config.latent_channels,
             ),
         ).sample
-        muse_image = self.muse_pipe.image_processor.postprocess(muse_image, output_type)
+        muse_image = self.image_processor.postprocess(muse_image, output_type)
 
         image = None
         has_nsfw_concept = None
@@ -454,8 +440,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         return TextToVideoPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
 
 
-    def muse_setup(it, prompt, muse_guidance_scale):
-        self = it.muse_pipe
+    def muse_setup(self, prompt, muse_guidance_scale):
         guidance_scale = muse_guidance_scale
         num_images_per_prompt = 1
         negative_prompt_embeds = None
