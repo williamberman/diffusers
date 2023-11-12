@@ -138,6 +138,13 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
     ):
         super().__init__()
 
+        embedding_layer = vqvae.quantize.embedding
+        n_new_embeddings = scheduler.config.mask_token_id - embedding_layer.num_embeddings + 1
+        new_embeddings = torch.randn(n_new_embeddings, embedding_layer.embedding_dim, device=embedding_layer.weight.device)
+        extended_weight = torch.cat([embedding_layer.weight, new_embeddings], 0)
+        embedding_layer.num_embeddings += n_new_embeddings
+        embedding_layer.weight = torch.nn.Parameter(extended_weight)
+
         self.register_modules(
             vqvae=vqvae,
             tokenizer=tokenizer,

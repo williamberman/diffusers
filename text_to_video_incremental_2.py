@@ -7,18 +7,7 @@ model_id = "../muse-512-finetuned-convert"
 pipe = OpenMuseTextToVideoZeroPipeline.from_pretrained(model_id).to("cuda")
 pipe.transformer.set_attn_processor(AttnProcessor())
 
-
-embedding_layer = pipe.vqvae.quantize.embedding
-n_new_embeddings = pipe.scheduler.config.mask_token_id - embedding_layer.num_embeddings + 1
-new_embeddings = torch.randn(n_new_embeddings, embedding_layer.embedding_dim, device='cuda')
-extended_weight = torch.cat([embedding_layer.weight, new_embeddings], 0)
-embedding_layer.num_embeddings += n_new_embeddings
-embedding_layer.weight = torch.nn.Parameter(extended_weight)
-
 prompt = "a cowboy riding a horse with a city in the background"
-
-def to_im(im):
-    return Image.fromarray((im * 255).clip(0, 255).astype("uint8"))
 
 motion_field_strength_x = -15
 seed = 5
