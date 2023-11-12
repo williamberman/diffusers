@@ -308,7 +308,9 @@ class OpenMuseInpaintPipeline(DiffusionPipeline):
             mask_image, height // self.vae_scale_factor, width // self.vae_scale_factor
         )
         mask = mask.reshape(mask.shape[0], -1).bool().to(latents.device)
-        latents[mask] = self.scheduler.config.mask_token_id
+        latents = self.scheduler.add_noise(
+            latents, self.scheduler.timesteps[start_timestep_idx], generator=generator, mask=mask
+        )
 
         latents = latents.repeat(num_images_per_prompt, 1)
 
