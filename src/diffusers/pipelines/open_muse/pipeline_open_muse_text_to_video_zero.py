@@ -156,12 +156,11 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         callback,
         callback_steps,
         num_warmup_steps,
+        prompt_embeds,
+        micro_conds,
+        encoder_hidden_states,
+        generator,
         cross_attention_kwargs=None,
-        muse_prompt_embeds=None,
-        muse_micro_conds=None,
-        muse_encoder_hidden_states=None,
-        muse_generator=None,
-        muse=False
     ):
         """
         Perform backward process given list of time steps.
@@ -194,13 +193,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             latents:
                 Latents of backward process output at time timesteps[-1].
         """
-        assert muse
-        assert muse_prompt_embeds is not None
-        assert muse_micro_conds is not None
-        assert muse_encoder_hidden_states is not None
-        assert muse_generator is not None
-        extra_step_kwargs = {"generator": muse_generator}
-
         do_classifier_free_guidance = guidance_scale > 1.0
 
         num_steps = (len(timesteps) - num_warmup_steps) // self.scheduler.order
@@ -214,9 +206,9 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                 # predict the noise residual
                 noise_pred = self.transformer(
                     latent_model_input,
-                    micro_conds=muse_micro_conds,
-                    cond_embeds=muse_prompt_embeds,
-                    encoder_hidden_states=muse_encoder_hidden_states,
+                    micro_conds=micro_conds,
+                    cond_embeds=prompt_embeds,
+                    encoder_hidden_states=encoder_hidden_states,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
 
@@ -226,7 +218,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                latents = self.scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -252,11 +244,11 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
         frame_ids: Optional[List[int]] = None,
-        muse_guidance_scale=10.0,
-        muse_num_inference_steps=12,
-        muse_t1=9,
-        muse_generator=None,
-        muse_latents=None,
+        guidance_scale=10.0,
+        num_inference_steps=12,
+        t1=None,
+        generator=None,
+        latents=None,
     ):
         """
         The call function to the pipeline for generation.
@@ -345,7 +337,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         if width is None:
             width = self.transformer.config.sample_size * self.vae_scale_factor
 
-        guidance_scale = muse_guidance_scale
+        guidance_scale = guidance_scale
         num_images_per_prompt = 1
         negative_prompt_embeds = None
         negative_prompt = None
@@ -409,23 +401,22 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         micro_conds = micro_conds.unsqueeze(0)
         micro_conds = micro_conds.expand(2 * batch_size if guidance_scale > 1.0 else batch_size, -1)
 
-        if muse_latents is None:
-            muse_latents = torch.full(
+        if latents is None:
+            latents = torch.full(
                 (1, 1024), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
             )
 
-        self.scheduler.set_timesteps(muse_num_inference_steps, device=device)
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
         muse_timesteps = self.scheduler.timesteps
 
         muse_x_1_t1 = self.backward_loop(
-            muse=True,
-            timesteps=muse_t1,
-            muse_prompt_embeds=prompt_embeds,
-            muse_micro_conds=micro_conds,
-            muse_encoder_hidden_states=encoder_hidden_states,
-            muse_generator=muse_generator,
-            latents=muse_latents,
-            guidance_scale=muse_guidance_scale,
+            timesteps=t1,
+            prompt_embeds=prompt_embeds,
+            micro_conds=micro_conds,
+            encoder_hidden_states=encoder_hidden_states,
+            generator=generator,
+            latents=latents,
+            guidance_scale=guidance_scale,
             callback=callback,
             callback_steps=callback_steps,
             num_warmup_steps=0,
@@ -466,13 +457,13 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         muse_x_1k_0 = muse_x_1k_t1
 
-        muse_latents = muse_x_1k_0
+        latents = muse_x_1k_0
 
         muse_image = self.vqvae.decode(
-            muse_latents,
+            latents,
             force_not_quantize=True,
             shape=(
-                muse_latents.shape[0],
+                latents.shape[0],
                 height // self.vae_scale_factor,
                 width // self.vae_scale_factor,
                 self.vqvae.config.latent_channels,
@@ -481,6 +472,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         muse_image = self.image_processor.postprocess(muse_image, output_type)
 
         if not return_dict:
-            return (muse_image, muse_latents)
+            return (muse_image, latents)
 
         return TextToVideoPipelineOutput(images=muse_image)

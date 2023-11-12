@@ -29,8 +29,8 @@ for motion_field_strength_x in [-15]:
             video_length=2,
             motion_field_strength_y=0, 
             motion_field_strength_x=motion_field_strength_x,
-            muse_t1=t1,
-            muse_generator=torch.Generator('cuda').manual_seed(1),
+            t1=t1,
+            generator=torch.Generator('cuda').manual_seed(1),
             return_dict=False,
         )
 
@@ -54,10 +54,10 @@ for motion_field_strength_x in [-15]:
                     video_length=2,
                     motion_field_strength_y=0, 
                     motion_field_strength_x=motion_field_strength_x,
-                    muse_t1=[11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
-                    muse_generator=torch.Generator('cuda').manual_seed(seed),
+                    t1=[11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+                    generator=torch.Generator('cuda').manual_seed(seed),
                     return_dict=False,
-                    muse_latents=muse_latents,
+                    latents=muse_latents,
                 )
 
                 all_gif_frames.append(muse_image[0])
