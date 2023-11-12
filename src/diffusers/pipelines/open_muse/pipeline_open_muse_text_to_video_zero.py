@@ -236,14 +236,12 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         height: Optional[int] = None,
         width: Optional[int] = None,
         negative_prompt: Optional[Union[str, List[str]]] = None,
-        num_videos_per_prompt: Optional[int] = 1,
         motion_field_strength_x: float = 12,
         motion_field_strength_y: float = 12,
         output_type: Optional[str] = "tensor",
         return_dict: bool = True,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
-        frame_ids: Optional[List[int]] = None,
         guidance_scale=10.0,
         num_inference_steps=12,
         t1=None,
@@ -318,11 +316,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                 video contains "not-safe-for-work" (nsfw) content..
         """
         assert video_length > 0
-        if frame_ids is None:
-            frame_ids = list(range(video_length))
-        assert len(frame_ids) == video_length
-
-        assert num_videos_per_prompt == 1
 
         if isinstance(prompt, str):
             prompt = [prompt]
@@ -338,7 +331,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             width = self.transformer.config.sample_size * self.vae_scale_factor
 
         guidance_scale = guidance_scale
-        num_images_per_prompt = 1
         negative_prompt_embeds = None
         negative_prompt = None
 
@@ -366,9 +358,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         prompt_embeds = outputs.text_embeds
         encoder_hidden_states = outputs.hidden_states[-2]
 
-        prompt_embeds = prompt_embeds.repeat(num_images_per_prompt, 1)
-        encoder_hidden_states = encoder_hidden_states.repeat(num_images_per_prompt, 1, 1)
-
         if guidance_scale > 1.0:
             if negative_prompt_embeds is None:
                 if negative_prompt is None:
@@ -388,9 +377,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                 outputs = self.text_encoder(input_ids, return_dict=True, output_hidden_states=True)
                 negative_prompt_embeds = outputs.text_embeds
                 negative_encoder_hidden_states = outputs.hidden_states[-2]
-
-            negative_prompt_embeds = negative_prompt_embeds.repeat(num_images_per_prompt, 1)
-            negative_encoder_hidden_states = negative_encoder_hidden_states.repeat(num_images_per_prompt, 1, 1)
 
             prompt_embeds = torch.concat([negative_prompt_embeds, prompt_embeds])
             encoder_hidden_states = torch.concat([negative_encoder_hidden_states, encoder_hidden_states])
@@ -435,7 +421,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             motion_field_strength_x=motion_field_strength_x,
             motion_field_strength_y=motion_field_strength_y,
             latents=muse_x_2k_t0,
-            frame_ids=frame_ids[1:],
+            frame_ids=[1],
         )
 
         # replace padding with mask
