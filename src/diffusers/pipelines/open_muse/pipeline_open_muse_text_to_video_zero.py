@@ -324,12 +324,12 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         if latents is None:
             latents = torch.full(
-                (1, height*width), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
+                (1, (height//self.vae_scale_factor)*(width//self.vae_scale_factor)), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
             )
 
         self.scheduler.set_timesteps(num_inference_steps, device=device)
 
-        muse_x_1_t1 = self.backward_loop(
+        frame0 = self.backward_loop(
             prompt_embeds=prompt_embeds,
             micro_conds=micro_conds,
             encoder_hidden_states=encoder_hidden_states,
@@ -341,68 +341,66 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             masking_schedule='cos',
         )
 
-        muse_x_1_t0 = muse_x_1_t1
-
-        all_frames = [muse_x_1_t0.clone()]
+        all_frames = [frame0]
 
         for _ in range(video_length-1):
-            muse_x_2k_t0 = all_frames[-1].clone()
+            frame_n = all_frames[-1].clone()
 
             # de-quantize
-            muse_x_2k_t0 = self.vqvae.quantize.get_codebook_entry(muse_x_2k_t0, (muse_x_2k_t0.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
+            frame_n = self.vqvae.quantize.get_codebook_entry(frame_n, (frame_n.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
 
             # warp
-            muse_x_2k_t0 = create_motion_field_and_warp_latents(
+            frame_n = create_motion_field_and_warp_latents(
                 motion_field_strength_x=motion_field_strength_x,
                 motion_field_strength_y=motion_field_strength_y,
-                latents=muse_x_2k_t0,
+                latents=frame_n,
                 frame_ids=[1],
             )
 
             # replace padding with mask
-            padded_indices = (muse_x_2k_t0 == 0).all(dim=1, keepdim=True)
+            padded_indices = (frame_n == 0).all(dim=1, keepdim=True)
             masked_embedding = self.vqvae.quantize.embedding.weight[-1]
-            n_channels = muse_x_2k_t0.shape[1]
-            muse_x_2k_t0 = muse_x_2k_t0.permute(0, 2, 3, 1)
-            muse_x_2k_t0[
+            n_channels = frame_n.shape[1]
+            frame_n = frame_n.permute(0, 2, 3, 1)
+            frame_n[
                 padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)
             ] = masked_embedding.repeat(padded_indices.sum())
-            muse_x_2k_t0 = muse_x_2k_t0.permute(0, 3, 1, 2)
+            frame_n = frame_n.permute(0, 3, 1, 2)
 
             # quantize
-            muse_x_2k_t0 = self.vqvae.quantize(muse_x_2k_t0)[2][2].reshape(muse_x_2k_t0.shape[0], -1)
+            frame_n = self.vqvae.quantize(frame_n)[2][2].reshape(frame_n.shape[0], -1)
 
-            muse_x_2k_t0 = self.scheduler.add_noise(muse_x_2k_t0, 1, generator=torch.Generator('cuda').manual_seed(0))
+            frame_n = self.scheduler.add_noise(frame_n, 1, generator=torch.Generator('cuda').manual_seed(0))
 
-            muse_x_2k_t0 = self.backward_loop(
+            frame_n = self.backward_loop(
                 prompt_embeds=prompt_embeds,
                 micro_conds=micro_conds,
                 encoder_hidden_states=encoder_hidden_states,
                 generator=torch.Generator('cuda').manual_seed(5),
-                latents=muse_x_2k_t0,
+                latents=frame_n,
                 guidance_scale=guidance_scale,
                 callback=callback,
                 callback_steps=callback_steps,
                 masking_schedule='lin',
             )
 
-            all_frames.append(muse_x_2k_t0)
+            all_frames.append(frame_n)
 
-        latents = torch.concat(all_frames)
+        all_frames = torch.concat(all_frames)
 
-        muse_image = self.vqvae.decode(
-            latents,
+        images = self.vqvae.decode(
+            all_frames,
             force_not_quantize=True,
             shape=(
-                latents.shape[0],
+                all_frames.shape[0],
                 height // self.vae_scale_factor,
                 width // self.vae_scale_factor,
                 self.vqvae.config.latent_channels,
             ),
         ).sample
-        muse_image = self.image_processor.postprocess(muse_image, output_type)
+        images = self.image_processor.postprocess(images, output_type)
 
         if not return_dict:
-            return (muse_image,)
+            return (images,)
 
-        return TextToVideoPipelineOutput(images=muse_image)
+        return TextToVideoPipelineOutput(images=images)
