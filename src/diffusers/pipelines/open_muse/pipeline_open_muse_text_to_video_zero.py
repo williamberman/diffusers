@@ -165,6 +165,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         micro_conds,
         encoder_hidden_states,
         generator,
+        masking_schedule='cos',
         cross_attention_kwargs=None,
     ):
         """
@@ -198,6 +199,8 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             latents:
                 Latents of backward process output at time timesteps[-1].
         """
+        starting_mask_ratio = float((latents == self.scheduler.config.mask_token_id).sum()) / float(latents.numel())
+
         do_classifier_free_guidance = guidance_scale > 1.0
 
         num_warmup_steps = 0
@@ -225,7 +228,10 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, generator=generator).prev_sample
+                latents = self.scheduler.step(noise_pred, t, latents, generator=generator,
+                    starting_mask_ratio=starting_mask_ratio,
+                    masking_schedule=masking_schedule
+                                              ).prev_sample
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -318,7 +324,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         if latents is None:
             latents = torch.full(
-                (1, 1024), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
+                (1, height*width), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
             )
 
         self.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -332,12 +338,12 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             guidance_scale=guidance_scale,
             callback=callback,
             callback_steps=callback_steps,
+            masking_schedule='cos',
         )
 
         muse_x_1_t0 = muse_x_1_t1
 
         all_frames = [muse_x_1_t0.clone()]
-        self.scheduler.frames = True
 
         for _ in range(video_length-1):
             muse_x_2k_t0 = all_frames[-1].clone()
@@ -368,8 +374,6 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
             muse_x_2k_t0 = self.scheduler.add_noise(muse_x_2k_t0, 1, generator=torch.Generator('cuda').manual_seed(0))
 
-            self.scheduler.starting_mask_ratio = float((muse_x_2k_t0== 8255).sum()) / float(muse_x_2k_t0.numel())
-
             muse_x_2k_t0 = self.backward_loop(
                 prompt_embeds=prompt_embeds,
                 micro_conds=micro_conds,
@@ -379,6 +383,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                 guidance_scale=guidance_scale,
                 callback=callback,
                 callback_steps=callback_steps,
+                masking_schedule='lin',
             )
 
             all_frames.append(muse_x_2k_t0)
