@@ -6,20 +6,12 @@ import PIL.Image
 import torch
 import torch.nn.functional as F
 from torch.nn.functional import grid_sample
-from transformers import CLIPTokenizer
-
-from diffusers.utils import BaseOutput
-import ipdb
-from diffusers import DiffusionPipeline
-from typing import Any, Callable, Dict, List, Optional, Union
-
-import torch
 from transformers import CLIPTextModelWithProjection, CLIPTokenizer
 
 from ...image_processor import VaeImageProcessor
 from ...models import UVit2DModel, VQModel
 from ...schedulers import OpenMuseScheduler
-from ..pipeline_utils import DiffusionPipeline
+from ..pipeline_utils import BaseOutput, DiffusionPipeline
 
 
 @dataclass
@@ -120,6 +112,7 @@ def create_motion_field_and_warp_latents(motion_field_strength_x, motion_field_s
         warped_latents[i] = warp_single_latent(latents[i][None], motion_field[i][None])
     return warped_latents
 
+
 class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
     image_processor: VaeImageProcessor
     vqvae: VQModel
@@ -140,7 +133,9 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         embedding_layer = vqvae.quantize.embedding
         n_new_embeddings = scheduler.config.mask_token_id - embedding_layer.num_embeddings + 1
-        new_embeddings = torch.randn(n_new_embeddings, embedding_layer.embedding_dim, device=embedding_layer.weight.device)
+        new_embeddings = torch.randn(
+            n_new_embeddings, embedding_layer.embedding_dim, device=embedding_layer.weight.device
+        )
         extended_weight = torch.cat([embedding_layer.weight, new_embeddings], 0)
         embedding_layer.num_embeddings += n_new_embeddings
         embedding_layer.weight = torch.nn.Parameter(extended_weight)
@@ -165,7 +160,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         micro_conds,
         encoder_hidden_states,
         generator,
-        masking_schedule='cos',
+        masking_schedule="cos",
         cross_attention_kwargs=None,
     ):
         """
@@ -228,10 +223,14 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, generator=generator,
+                latents = self.scheduler.step(
+                    noise_pred,
+                    t,
+                    latents,
+                    generator=generator,
                     starting_mask_ratio=starting_mask_ratio,
-                    masking_schedule=masking_schedule
-                                              ).prev_sample
+                    masking_schedule=masking_schedule,
+                ).prev_sample
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -257,7 +256,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         callback_steps: Optional[int] = 1,
         guidance_scale=10.0,
         num_inference_steps=12,
-        negative_prompt_embeds = None,
+        negative_prompt_embeds=None,
         generator=None,
         latents=None,
     ):
@@ -268,10 +267,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         if isinstance(negative_prompt, str):
             negative_prompt = [negative_prompt]
 
-        if prompt is not None:
-            batch_size = len(prompt)
-        else:
-            batch_size = prompt_embeds.shape[0]
+        batch_size = len(prompt)
 
         device = self._execution_device
 
@@ -324,7 +320,10 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         if latents is None:
             latents = torch.full(
-                (1, (height//self.vae_scale_factor)*(width//self.vae_scale_factor)), self.scheduler.config.mask_token_id, dtype=torch.long, device=self._execution_device
+                (batch_size, (height // self.vae_scale_factor) * (width // self.vae_scale_factor)),
+                self.scheduler.config.mask_token_id,
+                dtype=torch.long,
+                device=self._execution_device,
             )
 
         self.scheduler.set_timesteps(num_inference_steps, device=device)
@@ -338,16 +337,24 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             guidance_scale=guidance_scale,
             callback=callback,
             callback_steps=callback_steps,
-            masking_schedule='cos',
+            masking_schedule="cos",
         )
 
         all_frames = [frame0]
 
-        for _ in range(video_length-1):
+        for _ in range(video_length - 1):
             frame_n = all_frames[-1].clone()
 
             # de-quantize
-            frame_n = self.vqvae.quantize.get_codebook_entry(frame_n, (frame_n.shape[0], height // self.vae_scale_factor, width // self.vae_scale_factor, self.vqvae.latent_channels))
+            frame_n = self.vqvae.quantize.get_codebook_entry(
+                frame_n,
+                (
+                    frame_n.shape[0],
+                    height // self.vae_scale_factor,
+                    width // self.vae_scale_factor,
+                    self.vqvae.latent_channels,
+                ),
+            )
 
             # warp
             frame_n = create_motion_field_and_warp_latents(
@@ -362,9 +369,9 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             masked_embedding = self.vqvae.quantize.embedding.weight[-1]
             n_channels = frame_n.shape[1]
             frame_n = frame_n.permute(0, 2, 3, 1)
-            frame_n[
-                padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)
-            ] = masked_embedding.repeat(padded_indices.sum())
+            frame_n[padded_indices.repeat(1, n_channels, 1, 1).permute(0, 2, 3, 1)] = masked_embedding.repeat(
+                padded_indices.sum()
+            )
             frame_n = frame_n.permute(0, 3, 1, 2)
 
             # quantize
@@ -381,7 +388,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
                 guidance_scale=guidance_scale,
                 callback=callback,
                 callback_steps=callback_steps,
-                masking_schedule='lin',
+                masking_schedule="lin",
             )
 
             all_frames.append(frame_n)
