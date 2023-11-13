@@ -8,6 +8,8 @@ from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from .scheduling_utils import SchedulerMixin
 
+import ipdb
+
 
 def gumbel_noise(t, generator=None):
     device = generator.device if generator is not None else t.device
@@ -64,6 +66,9 @@ class OpenMuseScheduler(SchedulerMixin, ConfigMixin):
         else:
             self.temperatures = torch.linspace(self.config.temperature, 0.01, num_inference_steps, device=device)
 
+    def scale_model_input(self, x, t):
+        return x
+
     def step(
         self,
         model_output: torch.FloatTensor,
@@ -71,6 +76,8 @@ class OpenMuseScheduler(SchedulerMixin, ConfigMixin):
         sample: torch.LongTensor,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
+        starting_mask_ratio=1,
+        masking_schedule='cos',
     ) -> Union[OpenMuseSchedulerOutput, Tuple]:
         unknown_map = sample == self.config.mask_token_id
 
@@ -89,7 +96,16 @@ class OpenMuseScheduler(SchedulerMixin, ConfigMixin):
             seq_len = sample.shape[1]
             step_idx = (self.timesteps == timestep).nonzero()
             ratio = (step_idx + 1) / len(self.timesteps)
-            mask_ratio = torch.cos(ratio * math.pi / 2)
+
+            if masking_schedule == 'cos':
+                mask_ratio = torch.cos(ratio * math.pi / 2)
+            elif masking_schedule == 'lin':
+                mask_ratio = (1-ratio)
+            else:
+                raise ValueError(f"unknown masking schedule {masking_schedule}")
+
+            mask_ratio = starting_mask_ratio * mask_ratio
+
             mask_len = (seq_len * mask_ratio).floor()
             # do not mask more than amount previously masked
             mask_len = torch.min(unknown_map.sum(dim=-1, keepdim=True) - 1, mask_len)
@@ -110,20 +126,28 @@ class OpenMuseScheduler(SchedulerMixin, ConfigMixin):
 
         return OpenMuseSchedulerOutput(prev_sample, pred_original_sample)
 
-    def add_noise(self, sample, timesteps, generator=None):
+    def add_noise(self, sample, timesteps, generator=None, mask=None):
         step_idx = (self.timesteps == timesteps).nonzero()
         ratio = (step_idx + 1) / len(self.timesteps)
         mask_ratio = torch.cos(ratio * math.pi / 2)
 
-        mask_indices = (
+        rng = (
             torch.rand(
                 sample.shape, device=generator.device if generator is not None else sample.device, generator=generator
             ).to(sample.device)
+        )
+
+        if mask is not None:
+            rng[~mask] = 1
+
+        mask_indices = (
+            rng
             < mask_ratio
         )
 
         masked_sample = sample.clone()
 
-        masked_sample[mask_indices] = self.config.mask_token_id
+        if mask_indices.numel() != 0:
+            masked_sample[mask_indices] = self.config.mask_token_id
 
         return masked_sample
