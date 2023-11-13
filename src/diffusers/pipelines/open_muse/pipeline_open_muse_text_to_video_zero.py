@@ -370,13 +370,13 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             # quantize
             frame_n = self.vqvae.quantize(frame_n)[2][2].reshape(frame_n.shape[0], -1)
 
-            frame_n = self.scheduler.add_noise(frame_n, 1, generator=torch.Generator('cuda').manual_seed(0))
+            frame_n = self.scheduler.add_noise(frame_n, 1, generator=generator)
 
             frame_n = self.backward_loop(
                 prompt_embeds=prompt_embeds,
                 micro_conds=micro_conds,
                 encoder_hidden_states=encoder_hidden_states,
-                generator=torch.Generator('cuda').manual_seed(5),
+                generator=generator,
                 latents=frame_n,
                 guidance_scale=guidance_scale,
                 callback=callback,
