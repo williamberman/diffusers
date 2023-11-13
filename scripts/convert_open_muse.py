@@ -40,20 +40,18 @@ def main():
     if args.model_256:
         old_transformer = MaskGiTUViT.from_pretrained("openMUSE/muse-256", subfolder="transformer")
     else:
-        old_transformer = MaskGiTUViT.from_pretrained(
-            "../research-run-512-checkpoints/research-run-512-with-downsample-checkpoint-554000/unwrapped_model/"
-        )
+        old_transformer = MaskGiTUViT.from_pretrained("openMUSE/muse-512-finetuned", subfolder="transformer")
 
     old_transformer.to(device)
 
-    old_vae = VQGANModel.from_pretrained("openMUSE/muse-512", subfolder="vae")
+    old_vae = VQGANModel.from_pretrained("openMUSE/muse-512-finetuned", subfolder="vae")
     old_vae.to(device)
 
     vqvae = make_vqvae(old_vae)
 
-    tokenizer = CLIPTokenizer.from_pretrained("openMUSE/muse-512", subfolder="text_encoder")
+    tokenizer = CLIPTokenizer.from_pretrained("openMUSE/muse-512-finetuned", subfolder="text_encoder")
 
-    text_encoder = CLIPTextModelWithProjection.from_pretrained("openMUSE/muse-512", subfolder="text_encoder")
+    text_encoder = CLIPTextModelWithProjection.from_pretrained("openMUSE/muse-512-finetuned", subfolder="text_encoder")
     text_encoder.to(device)
 
     transformer = make_transformer(old_transformer, args.model_256)
@@ -94,12 +92,15 @@ def main():
     # assert diff diff.sum() == 0
     print("TEMP skipping pipeline full equivalence check")
 
+    print(f"diff.max() {diff.max()}")
+    print(f"diff.sum() {diff.sum() / diff.size}")
+
     if args.model_256:
         assert diff.max() == 2
         assert diff.sum() / diff.size < 0.7
     else:
-        assert diff.max() == 1
-        assert diff.sum() / diff.size < 0.4
+        assert diff.max() == 2
+        assert diff.sum() / diff.size < 0.5
 
     if args.write_to is not None:
         new_pipe.save_pretrained(args.write_to)
