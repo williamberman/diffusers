@@ -258,7 +258,11 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
         num_inference_steps=12,
         negative_prompt_embeds=None,
         generator=None,
+        generator2=None,
         latents=None,
+        follow_on_frames_mask_ratio=0.13,
+        end_latents=None,
+        end_addition_ratio=None,
     ):
         assert video_length > 0
 
@@ -342,7 +346,7 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
 
         all_frames = [frame0]
 
-        for _ in range(video_length - 1):
+        for i in range(video_length - 1):
             frame_n = all_frames[-1].clone()
 
             # de-quantize
@@ -377,13 +381,26 @@ class OpenMuseTextToVideoZeroPipeline(DiffusionPipeline):
             # quantize
             frame_n = self.vqvae.quantize(frame_n)[2][2].reshape(frame_n.shape[0], -1)
 
-            frame_n = self.scheduler.add_noise(frame_n, 1, generator=generator)
+            if isinstance(follow_on_frames_mask_ratio, list):
+                if i < len(follow_on_frames_mask_ratio):
+                    mask_ratio = follow_on_frames_mask_ratio[i]
+                else:
+                    mask_ratio = 0.13
+            else:
+                mask_ratio = follow_on_frames_mask_ratio
+
+            if isinstance(end_addition_ratio, list) and i < len(end_addition_ratio):
+                end_addition_ratio_ = end_addition_ratio[i]
+            else:
+                end_addition_ratio_ = None
+
+            frame_n = self.scheduler.add_noise(frame_n, mask_ratio=mask_ratio, generator=generator, end_addition_ratio=end_addition_ratio_, end_latents=end_latents)
 
             frame_n = self.backward_loop(
                 prompt_embeds=prompt_embeds,
                 micro_conds=micro_conds,
                 encoder_hidden_states=encoder_hidden_states,
-                generator=generator,
+                generator=generator2 if generator2 is not None else generator,
                 latents=frame_n,
                 guidance_scale=guidance_scale,
                 callback=callback,

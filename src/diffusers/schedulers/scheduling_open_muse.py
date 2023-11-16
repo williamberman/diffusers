@@ -124,10 +124,12 @@ class OpenMuseScheduler(SchedulerMixin, ConfigMixin):
 
         return OpenMuseSchedulerOutput(prev_sample, pred_original_sample)
 
-    def add_noise(self, sample, timesteps, generator=None, mask=None):
-        step_idx = (self.timesteps == timesteps).nonzero()
-        ratio = (step_idx + 1) / len(self.timesteps)
-        mask_ratio = torch.cos(ratio * math.pi / 2)
+    def add_noise(self, sample, timesteps=None, generator=None, mask=None, mask_ratio=None, end_addition_ratio=None, end_latents=None):
+        if mask_ratio is None:
+            assert timesteps is not None
+            step_idx = (self.timesteps == timesteps).nonzero()
+            ratio = (step_idx + 1) / len(self.timesteps)
+            mask_ratio = torch.cos(ratio * math.pi / 2)
 
         rng = torch.rand(
             sample.shape, device=generator.device if generator is not None else sample.device, generator=generator
@@ -142,5 +144,9 @@ class OpenMuseScheduler(SchedulerMixin, ConfigMixin):
 
         if mask_indices.numel() != 0:
             masked_sample[mask_indices] = self.config.mask_token_id
+
+        if end_addition_ratio is not None:
+            end_addition_indices = rng < end_addition_ratio
+            masked_sample[end_addition_indices] = end_latents[end_addition_indices]
 
         return masked_sample
