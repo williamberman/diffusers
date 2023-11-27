@@ -164,9 +164,9 @@ class AdaLayerNormContinuous(nn.Module):
         # Note that AdaLayerNorm does not let the norm layer have scale and shift parameters.
         # However, this is how it was implemented in the original code, and it's rather likely you should
         # set `elementwise_affine` to False.
-        elementwise_affine,
-        eps,
-        bias,
+        elementwise_affine=True,
+        eps=1e-5,
+        bias=True,
         norm_type="layer_norm",
     ):
         super().__init__()
