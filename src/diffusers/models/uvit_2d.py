@@ -204,8 +204,6 @@ class UVit2DModel(ModelMixin, ConfigMixin):
             cross_attention_kwargs=cross_attention_kwargs,
         )
 
-        batch_size, channels, height, width = hidden_states.shape
-        hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(batch_size, height * width, channels)
         logits = self.mlm_layer(hidden_states)
 
         return logits
@@ -297,9 +295,6 @@ class UVit2DConvEmbed(nn.Module):
         self.conv = nn.Conv2d(in_channels, block_out_channels, kernel_size=1, bias=bias)
 
     def forward(self, input_ids):
-        batch_size, seq_length = input_ids.shape
-        height, width = int(seq_length**0.5), int(seq_length**0.5)
-        input_ids = input_ids.view(-1, height, width)
         embeddings = self.embeddings(input_ids)
         embeddings = self.layer_norm(embeddings)
         embeddings = embeddings.permute(0, 3, 1, 2)
@@ -465,17 +460,12 @@ class ConvMlmLayer(nn.Module):
         codebook_size: int,
     ):
         super().__init__()
-        self.codebook_size = codebook_size
         self.conv1 = nn.Conv2d(block_out_channels, in_channels, kernel_size=1, bias=use_bias)
         self.layer_norm = RMSNorm(in_channels, layer_norm_eps, ln_elementwise_affine)
         self.conv2 = nn.Conv2d(in_channels, codebook_size, kernel_size=1, bias=use_bias)
 
     def forward(self, hidden_states):
-        batch_size, seq_length, hidden_size = hidden_states.shape
-        resolution = int(seq_length**0.5)
-        hidden_states = hidden_states.view(batch_size, resolution, resolution, hidden_size).permute(0, 3, 1, 2)
         hidden_states = self.conv1(hidden_states)
         hidden_states = self.layer_norm(hidden_states.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         logits = self.conv2(hidden_states)
-        logits = logits.permute(0, 2, 3, 1).view(batch_size, -1, self.codebook_size)
         return logits

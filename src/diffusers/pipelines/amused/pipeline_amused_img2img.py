@@ -128,6 +128,9 @@ class AmusedImg2ImgPipeline(DiffusionPipeline):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        micro_conditioning_aesthetic_score: int = 6,
+        micro_conditioning_crop_coord_height: int = 0,
+        micro_conditioning_crop_coord_width: int = 0,
     ):
         """
         The call function to the pipeline for generation.
@@ -266,8 +269,18 @@ class AmusedImg2ImgPipeline(DiffusionPipeline):
 
         height, width = image.shape[-2:]
 
+        # Note that the micro conditionings _do_ flip the order of width, height for the original size
+        # and the crop coordinates. This is how it was done in the original code base
         micro_conds = torch.tensor(
-            [height, width, 0, 0, 6], device=self._execution_device, dtype=encoder_hidden_states.dtype
+            [
+                width,
+                height,
+                micro_conditioning_crop_coord_height,
+                micro_conditioning_crop_coord_width,
+                micro_conditioning_aesthetic_score,
+            ],
+            device=self._execution_device,
+            dtype=encoder_hidden_states.dtype,
         )
 
         micro_conds = micro_conds.unsqueeze(0)
@@ -278,12 +291,12 @@ class AmusedImg2ImgPipeline(DiffusionPipeline):
         start_timestep_idx = len(self.scheduler.timesteps) - num_inference_steps
 
         latents = self.vqvae.encode(image.to(dtype=self.vqvae.dtype, device=self._execution_device)).latents
-        latents_bsz = latents.shape[0]
-        latents = self.vqvae.quantize(latents)[2][2].reshape(latents_bsz, -1)
+        latents_bsz, channels, latents_height, latents_width = latents.shape
+        latents = self.vqvae.quantize(latents)[2][2].reshape(latents_bsz, latents_height, latents_width)
         latents = self.scheduler.add_noise(
             latents, self.scheduler.timesteps[start_timestep_idx - 1], generator=generator
         )
-        latents = latents.repeat(num_images_per_prompt, 1)
+        latents = latents.repeat(num_images_per_prompt, 1, 1)
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i in range(start_timestep_idx, len(self.scheduler.timesteps)):

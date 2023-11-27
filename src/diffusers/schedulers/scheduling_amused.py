@@ -74,6 +74,13 @@ class AmusedScheduler(SchedulerMixin, ConfigMixin):
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
     ) -> Union[AmusedSchedulerOutput, Tuple]:
+        two_dim_input = sample.ndim == 3 and model_output.ndim == 4
+
+        if two_dim_input:
+            batch_size, codebook_size, height, width = model_output.shape
+            sample = sample.reshape(batch_size, height * width)
+            model_output = model_output.reshape(batch_size, codebook_size, height * width).permute(0, 2, 1)
+
         unknown_map = sample == self.config.mask_token_id
 
         probs = model_output.softmax(dim=-1)
@@ -115,6 +122,10 @@ class AmusedScheduler(SchedulerMixin, ConfigMixin):
 
             # Masks tokens with lower confidence.
             prev_sample = torch.where(masking, self.config.mask_token_id, pred_original_sample)
+
+        if two_dim_input:
+            prev_sample = prev_sample.reshape(batch_size, height, width)
+            pred_original_sample = pred_original_sample.reshape(batch_size, height, width)
 
         if not return_dict:
             return (prev_sample, pred_original_sample)

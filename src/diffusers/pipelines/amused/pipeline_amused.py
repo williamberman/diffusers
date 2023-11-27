@@ -112,6 +112,9 @@ class AmusedPipeline(DiffusionPipeline):
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        micro_conditioning_aesthetic_score: int = 6,
+        micro_conditioning_crop_coord_height: int = 0,
+        micro_conditioning_crop_coord_width: int = 0,
     ):
         """
         The call function to the pipeline for generation.
@@ -246,15 +249,23 @@ class AmusedPipeline(DiffusionPipeline):
             prompt_embeds = torch.concat([negative_prompt_embeds, prompt_embeds])
             encoder_hidden_states = torch.concat([negative_encoder_hidden_states, encoder_hidden_states])
 
+        # Note that the micro conditionings _do_ flip the order of width, height for the original size
+        # and the crop coordinates. This is how it was done in the original code base
         micro_conds = torch.tensor(
-            [height, width, 0, 0, 6], device=self._execution_device, dtype=encoder_hidden_states.dtype
+            [
+                width,
+                height,
+                micro_conditioning_crop_coord_height,
+                micro_conditioning_crop_coord_width,
+                micro_conditioning_aesthetic_score,
+            ],
+            device=self._execution_device,
+            dtype=encoder_hidden_states.dtype,
         )
         micro_conds = micro_conds.unsqueeze(0)
         micro_conds = micro_conds.expand(2 * batch_size if guidance_scale > 1.0 else batch_size, -1)
 
-        seq_len = (height // self.vae_scale_factor) * (width // self.vae_scale_factor)
-
-        shape = (batch_size, seq_len)
+        shape = (batch_size, height // self.vae_scale_factor, width // self.vae_scale_factor)
 
         if latents is None:
             latents = torch.full(
