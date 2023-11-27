@@ -12,7 +12,7 @@ specific language governing permissions and limitations under the License.
 
 # aMUSEd
 
-aMUSEd is a light weight text to image model developed by the diffusers team at Hugging Face. Contributors include Suraj Patil, William Berman, and Patrick von Platen. Many thanks to community contributors <TODO community contributors?>, ... and Robin Rombach, <TODO advice people?> for advice.
+<TODO>
 
 aMUSEd is a masked transformer model trained on LAION-5B and LAION-5B aesthetic subsets. There are two checkpoints, one for 256x256 and one for 512x512 image resolution.
 
